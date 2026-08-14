@@ -1,0 +1,17 @@
+diff --git a/lib/utils/parse-sax.js b/lib/utils/parse-sax.js
+--- a/lib/utils/parse-sax.js
++++ b/lib/utils/parse-sax.js
+@@ -1,3 +1,3 @@
+ const {SaxesParser} = require('saxes');
+-const {PassThrough} = require('readable-stream');
++const {PassThrough} = require('node:stream');
+ const {bufferToString} = require('./browser-buffer-decode');
+diff --git a/lib/xlsx/xlsx.js b/lib/xlsx/xlsx.js
+--- a/lib/xlsx/xlsx.js
++++ b/lib/xlsx/xlsx.js
+@@ -1,4 +1,4 @@
+ const fs = require('fs');
+ const JSZip = require('jszip');
+-const {PassThrough} = require('readable-stream');
++const {PassThrough} = require('node:stream');
+ const ZipStream = require('../utils/zip-stream');

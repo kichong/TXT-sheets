@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="#1F7A59"/>
+  <clipPath id="sheet-panel"><rect x="96" y="96" width="320" height="320" rx="44"/></clipPath>
+  <g clip-path="url(#sheet-panel)">
+    <rect x="96" y="96" width="320" height="320" fill="#F7FCF9"/>
+    <rect x="96" y="96" width="320" height="104" fill="#D9F0E5"/>
+    <path d="M203 96v320M309 96v320M96 200h320M96 308h320" fill="none" stroke="#1F7A59" stroke-width="18"/>
+  </g>
+  <rect x="96" y="96" width="320" height="320" rx="44" fill="none" stroke="#176548" stroke-width="10"/>
+</svg>

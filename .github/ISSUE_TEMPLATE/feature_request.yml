@@ -1,0 +1,17 @@
+name: Feature request
+description: Suggest an essential spreadsheet improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: User need
+      description: Describe the spreadsheet task and why the current workflow does not cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Keep the proposal minimal and compatible with the existing interface when possible.

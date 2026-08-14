@@ -1,0 +1,15 @@
+packages:
+  - .
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - sharp
+
+patchedDependencies:
+  exceljs@4.4.0: patches/exceljs@4.4.0.patch
+allowBuilds:
+  electron: true
+  electron-winstaller: false
+  esbuild: true
+  sharp: true

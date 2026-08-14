@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+output/
+.playwright-cli/
+.codex-artifacts/
+outputs/
+build/icon-256.png
+coverage/
+*.log
+.DS_Store
+Thumbs.db

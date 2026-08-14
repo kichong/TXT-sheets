@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible TXT Sheets problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: TXT Sheets version
+      placeholder: 0.2.0
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the workbook format and the smallest safe reproduction you can provide.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Windows environment
+      description: Windows version and any relevant display settings.
