@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { exportWorkbook, importWorkbook } from '../src/main/workbook-io';
 import { createFormulaEvaluator } from '../src/renderer/formulas';
 
-const fixturePath = resolve('outputs/019ff27f-24bb-7ae0-8017-7cbf746a0b6f/fidelity-fixture.xlsx');
+const fixturePath = resolve('tests/fixtures/fidelity-fixture.xlsx');
 
 describe('Excel workbook fidelity', () => {
   it('imports and exports core workbook structure, formulas, and styling', async () => {
