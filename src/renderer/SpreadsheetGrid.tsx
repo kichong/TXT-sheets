@@ -27,6 +27,9 @@ interface SpreadsheetGridProps {
   onCancelEdit(): void;
   onStartEdit(initial?: string): void;
   onSelectionChange(selection: Selection): void;
+  onFillSelection(source: Selection, target: Selection): void;
+  onPickFormulaReference(row: number, column: number): void;
+  referencePicking: boolean;
   onColumnResize(column: number, width: number): void;
   onRowResize(row: number, height: number): void;
   onKeyDown(event: KeyboardEvent<HTMLDivElement>): void;
@@ -43,9 +46,13 @@ interface ResizeSession {
 
 function displayNumber(value: number, format?: string): string {
   if (!format || format === 'General') return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(12)));
-  const decimals = Math.min(6, (format.split('.')[1]?.match(/[0#]/gu) ?? []).length);
+  const primaryFormat = format.split(';')[0];
+  const decimals = Math.min(6, (primaryFormat.split('.')[1]?.match(/[0#]/gu) ?? []).length);
   if (format.includes('%')) return new Intl.NumberFormat(undefined, { style: 'percent', minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
-  if (format.includes('$')) return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
+  if (format.includes('$')) return new Intl.NumberFormat(undefined, {
+    style: 'currency', currency: 'USD', currencySign: format.includes('(') ? 'accounting' : 'standard',
+    minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+  }).format(value);
   return new Intl.NumberFormat(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
 }
 
@@ -54,7 +61,7 @@ function displayValue(cell: CellData | undefined, evaluated: ReturnType<FormulaE
   if (value === null || value === undefined) return '';
   if (cell?.valueType === 'date' && typeof value === 'string') {
     const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? value : date.toLocaleDateString();
+    return Number.isNaN(date.valueOf()) ? value : date.toLocaleDateString(undefined, { timeZone: 'UTC' });
   }
   return typeof value === 'number' ? displayNumber(value, cell?.style?.numberFormat) : String(value);
 }
@@ -83,11 +90,14 @@ function styleForCell(cell: CellData | undefined): CSSProperties {
 export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(function SpreadsheetGrid(props, forwardedRef) {
   const {
     sheet, evaluator, selection, editing, editValue, onEditValueChange, onCommitEdit, onCancelEdit,
-    onStartEdit, onSelectionChange, onColumnResize, onRowResize, onKeyDown,
+    onStartEdit, onSelectionChange, onFillSelection, onPickFormulaReference, referencePicking,
+    onColumnResize, onRowResize, onKeyDown,
   } = props;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
   const dragging = useRef(false);
+  const fillSource = useRef<Selection | null>(null);
+  const fillTarget = useRef<Selection | null>(null);
   const resizing = useRef<ResizeSession | null>(null);
   const bounds = selectionBounds(selection);
 
@@ -133,10 +143,30 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
 
   const pointerDown = (event: PointerEvent, row: number, column: number) => {
     if (event.button !== 0) return;
+    if (referencePicking) {
+      event.preventDefault();
+      onPickFormulaReference(row, column);
+      return;
+    }
     dragging.current = true;
     const point = { row, column };
     onSelectionChange({ anchor: event.shiftKey ? selection.anchor : point, focus: point });
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  };
+
+  const beginFill = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragging.current = false;
+    fillSource.current = structuredClone(selection);
+    fillTarget.current = structuredClone(selection);
+  };
+
+  const finishPointerAction = () => {
+    dragging.current = false;
+    if (fillSource.current && fillTarget.current) onFillSelection(fillSource.current, fillTarget.current);
+    fillSource.current = null;
+    fillTarget.current = null;
   };
 
   const clampSize = (axis: ResizeSession['axis'], size: number) => Math.round(Math.min(
@@ -209,8 +239,8 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
       role="grid"
       aria-label={`${sheet.name} spreadsheet grid`}
       onKeyDown={onKeyDown}
-      onPointerUp={() => { dragging.current = false; }}
-      onPointerCancel={() => { dragging.current = false; }}
+      onPointerUp={finishPointerAction}
+      onPointerCancel={finishPointerAction}
       onScroll={(event) => setScroll({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })}
     >
       <div className="grid-canvas" style={{ width: ROW_HEADER_WIDTH + columnVirtualizer.getTotalSize(), height: COLUMN_HEADER_HEIGHT + rowVirtualizer.getTotalSize() }}>
@@ -305,11 +335,24 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
               }}
               onPointerDown={(event) => pointerDown(event, row.index, column.index)}
               onPointerEnter={() => {
-                if (dragging.current) onSelectionChange({ anchor: selection.anchor, focus: { row: row.index, column: column.index } });
+                if (fillSource.current) {
+                  const sourceBounds = selectionBounds(fillSource.current);
+                  const target = {
+                    anchor: { row: Math.min(sourceBounds.top, row.index), column: Math.min(sourceBounds.left, column.index) },
+                    focus: { row: Math.max(sourceBounds.bottom, row.index), column: Math.max(sourceBounds.right, column.index) },
+                  };
+                  fillTarget.current = target;
+                  onSelectionChange(target);
+                } else if (dragging.current) {
+                  onSelectionChange({ anchor: selection.anchor, focus: { row: row.index, column: column.index } });
+                }
               }}
               onDoubleClick={() => onStartEdit(editableCellText(cell))}
             >
               <span>{displayValue(cell, evaluator.evaluateCell(sheet.id, row.index, column.index))}</span>
+              {row.index === bounds.bottom && column.index === bounds.right && !editing ? (
+                <button type="button" className="fill-handle" aria-label="Drag to fill selected cells" onPointerDown={beginFill} />
+              ) : null}
             </div>
           );
         }))}

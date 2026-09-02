@@ -63,6 +63,11 @@ export interface CompatibilityIssue {
   detail: string;
 }
 
+export interface CompatibilityReportRequest {
+  sourceFormat: WorkbookFormat | 'unsaved';
+  issues: CompatibilityIssue[];
+}
+
 export interface WorkbookDocument {
   schemaVersion: 1;
   title: string;
@@ -119,6 +124,7 @@ export interface SpreadsheetApi {
   openRecent(id: string): Promise<OpenResult>;
   save(workbook: WorkbookDocument): Promise<SaveResult>;
   saveAs(workbook: WorkbookDocument): Promise<SaveResult>;
+  reportCompatibility(request: CompatibilityReportRequest): Promise<void>;
   getRecentFiles(): Promise<RecentFile[]>;
   getRecovery(): Promise<WorkbookDocument | null>;
   writeRecovery(workbook: WorkbookDocument): Promise<void>;

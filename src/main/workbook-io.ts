@@ -71,7 +71,7 @@ function scalarFromExcel(value: ExcelJS.CellValue): { value: CellScalar; valueTy
   if (typeof value === 'string') return { value, valueType: 'text' };
   if (typeof value === 'number') return { value, valueType: 'number' };
   if (typeof value === 'boolean') return { value, valueType: 'boolean' };
-  if (value instanceof Date) return { value: value.toISOString(), valueType: 'date' };
+  if (value instanceof Date) return { value: value.toISOString().slice(0, 10), valueType: 'date' };
   if ('richText' in value) return { value: value.richText.map((part) => part.text).join(''), valueType: 'text' };
   if ('hyperlink' in value) return { value: value.text, valueType: 'text', hyperlink: value.hyperlink };
   if ('error' in value) return { value: value.error, valueType: 'error' };
@@ -112,10 +112,12 @@ function compatibilityIssuesFor(worksheet: ExcelJS.Worksheet): CompatibilityIssu
 
 function importWorksheet(worksheet: ExcelJS.Worksheet): SheetDocument {
   const cells: Record<string, CellData> = {};
-  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    row.eachCell({ includeEmpty: false }, (cell, columnNumber) => {
+  worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+    row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
       if (cell.type === ExcelJS.ValueType.Merge) return;
-      const imported = formulaCell(cell) ?? { ...scalarFromExcel(cell.value), style: importStyle(cell) };
+      const style = importStyle(cell);
+      if ((cell.value === null || cell.value === undefined) && !style) return;
+      const imported = formulaCell(cell) ?? { ...scalarFromExcel(cell.value), style };
       cells[`${rowNumber - 1}:${columnNumber - 1}`] = imported;
     });
   });

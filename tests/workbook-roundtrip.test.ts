@@ -2,12 +2,25 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ExcelJS from 'exceljs';
 import { exportWorkbook, importWorkbook } from '../src/main/workbook-io';
 import { createFormulaEvaluator } from '../src/renderer/formulas';
 
 const fixturePath = resolve('tests/fixtures/fidelity-fixture.xlsx');
 
 describe('Excel workbook fidelity', () => {
+  it('imports formatting from blank continuation rows', async () => {
+    const excel = new ExcelJS.Workbook();
+    const sheet = excel.addWorksheet('Sheet1');
+    sheet.getCell('A1').value = 'Date';
+    sheet.getCell('A2').value = new Date('2026-01-02T00:00:00Z');
+    sheet.getCell('A2').numFmt = 'm/d/yy';
+    sheet.getCell('A3').numFmt = 'm/d/yy';
+    const bytes = new Uint8Array(await excel.xlsx.writeBuffer());
+    const imported = await importWorkbook(bytes, 'formatted.xlsx', { id: 'formatted', displayName: 'formatted.xlsx', format: 'xlsx' });
+    expect(imported.sheets[0].cells['2:0']).toMatchObject({ value: null, valueType: 'blank', style: { numberFormat: 'm/d/yy' } });
+  });
+
   it('imports and exports core workbook structure, formulas, and styling', async () => {
     const bytes = new Uint8Array(await readFile(fixturePath));
     const source = { id: 'fixture', displayName: 'fidelity-fixture.xlsx', format: 'xlsx' as const };

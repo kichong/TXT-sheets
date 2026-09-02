@@ -63,6 +63,71 @@ export function applyStyle(sheet: SheetDocument, selection: Selection, patch: Pa
   }
 }
 
+export function nearestCellTemplate(sheet: SheetDocument, row: number, column: number): CellData | undefined {
+  for (let candidate = row - 1; candidate >= 0; candidate -= 1) {
+    const cell = sheet.cells[cellKey(candidate, column)];
+    if (cell?.style || cell?.valueType === 'date') return cell;
+  }
+  for (let candidate = row + 1; candidate < sheet.rowCount; candidate += 1) {
+    const cell = sheet.cells[cellKey(candidate, column)];
+    if (cell?.style || cell?.valueType === 'date') return cell;
+  }
+  return undefined;
+}
+
+function shiftFormulaReferences(formula: string, rowDelta: number, columnDelta: number): string {
+  return formula.replace(/(^|[^A-Z0-9_.])([$]?)([A-Z]+)([$]?)(\d+)(?!\d|\s*\()/giu, (match, prefix: string, absoluteColumn: string, columnName: string, absoluteRow: string, rowText: string) => {
+    const sourceColumn = columnName.toUpperCase().split('').reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1;
+    const targetColumn = absoluteColumn ? sourceColumn : Math.max(0, sourceColumn + columnDelta);
+    const targetRow = absoluteRow ? Number(rowText) - 1 : Math.max(0, Number(rowText) - 1 + rowDelta);
+    return `${prefix}${absoluteColumn}${columnNameForIndex(targetColumn)}${absoluteRow}${targetRow + 1}`;
+  });
+}
+
+function columnNameForIndex(index: number): string {
+  let value = index + 1;
+  let name = '';
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+}
+
+function modulo(value: number, divisor: number): number {
+  return ((value % divisor) + divisor) % divisor;
+}
+
+export function fillSelection(sheet: SheetDocument, source: Selection, target: Selection): void {
+  const sourceBounds = selectionBounds(source);
+  const targetBounds = selectionBounds(target);
+  const sourceHeight = sourceBounds.bottom - sourceBounds.top + 1;
+  const sourceWidth = sourceBounds.right - sourceBounds.left + 1;
+  const originals = new Map<string, CellData | undefined>();
+  for (let row = sourceBounds.top; row <= sourceBounds.bottom; row += 1) {
+    for (let column = sourceBounds.left; column <= sourceBounds.right; column += 1) {
+      originals.set(cellKey(row, column), structuredClone(sheet.cells[cellKey(row, column)]));
+    }
+  }
+  for (let row = targetBounds.top; row <= targetBounds.bottom; row += 1) {
+    for (let column = targetBounds.left; column <= targetBounds.right; column += 1) {
+      if (row >= sourceBounds.top && row <= sourceBounds.bottom && column >= sourceBounds.left && column <= sourceBounds.right) continue;
+      const sourceRow = sourceBounds.top + modulo(row - sourceBounds.top, sourceHeight);
+      const sourceColumn = sourceBounds.left + modulo(column - sourceBounds.left, sourceWidth);
+      const sourceCell = originals.get(cellKey(sourceRow, sourceColumn));
+      const targetKey = cellKey(row, column);
+      if (!sourceCell) {
+        delete sheet.cells[targetKey];
+        continue;
+      }
+      const next = structuredClone(sourceCell);
+      if (next.formula) next.formula = shiftFormulaReferences(next.formula, row - sourceRow, column - sourceColumn);
+      sheet.cells[targetKey] = next;
+    }
+  }
+}
+
 function shiftCells(sheet: SheetDocument, axis: 'row' | 'column', index: number, delta: 1 | -1): void {
   const next: Record<string, CellData> = {};
   for (const [key, cell] of Object.entries(sheet.cells)) {

@@ -1,11 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { AppStorage } from './main/storage';
 import { findLaunchWorkbookPath } from './main/launch-files';
 import { AppUpdateManager } from './main/updater';
 import { exportWorkbook, formatForPath, importWorkbook } from './main/workbook-io';
-import type { AppCommand, OpenResult, SaveResult, WorkbookDocument, WorkbookFormat } from './shared/types';
+import { buildCompatibilityReportUrl } from './shared/compatibility-report';
+import type { AppCommand, CompatibilityReportRequest, OpenResult, SaveResult, WorkbookDocument, WorkbookFormat } from './shared/types';
 
 let mainWindow: BrowserWindow | null = null;
 let storage: AppStorage;
@@ -129,6 +130,16 @@ function validateWorkbook(value: unknown): asserts value is WorkbookDocument {
   }
 }
 
+function validateCompatibilityReport(value: unknown): asserts value is CompatibilityReportRequest {
+  const report = value as Partial<CompatibilityReportRequest> | null;
+  if (!report || !['xlsx', 'csv', 'tsv', 'unsaved'].includes(String(report.sourceFormat)) || !Array.isArray(report.issues) || !report.issues.length || report.issues.length > 100) {
+    throw new Error('The compatibility report was invalid.');
+  }
+  if (report.issues.some((issue) => !issue || typeof issue.feature !== 'string' || typeof issue.detail !== 'string' || issue.feature.length > 300 || issue.detail.length > 2000)) {
+    throw new Error('The compatibility report was invalid.');
+  }
+}
+
 function installIpcHandlers(): void {
   ipcMain.handle('workbooks:open', async () => {
     const path = await chooseOpenPath();
@@ -158,6 +169,16 @@ function installIpcHandlers(): void {
   ipcMain.handle('workbooks:save-as', async (_event, value: unknown) => {
     validateWorkbook(value);
     return saveToPathOrCancel(value);
+  });
+  ipcMain.handle('workbooks:report-compatibility', async (_event, value: unknown) => {
+    validateCompatibilityReport(value);
+    await shell.openExternal(buildCompatibilityReportUrl({
+      ...value,
+      appName: 'TXT Sheets',
+      appVersion: app.getVersion(),
+      operatingSystem: `${process.platform} ${process.getSystemVersion()}`,
+      repositoryUrl: 'https://github.com/kichong/TXT-sheets',
+    }));
   });
   ipcMain.handle('workbooks:recent', () => storage.getRecentFiles());
   ipcMain.handle('workbooks:recovery', () => storage.getRecovery());

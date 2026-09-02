@@ -1,5 +1,5 @@
 import {
-  AlignCenter, AlignLeft, AlignRight, Bold, ChevronDown, ChevronLeft, ChevronRight,
+  AlignCenter, AlignLeft, AlignRight, Bold, Bug, ChevronDown, ChevronLeft, ChevronRight,
   CircleAlert, Columns3, Download, FilePlus2, FolderOpen, FunctionSquare, Italic, Moon, Plus,
   Redo2, RefreshCw, Rows3, Save, Search, Settings2, Sigma, Sun, Trash2, Underline, Undo2, X,
 } from 'lucide-react';
@@ -10,10 +10,10 @@ import type { AppCommand, AppUpdateState, CellStyle, RecentFile, WorkbookDocumen
 import { presentUpdate, type UpdateAction } from '../shared/updates';
 import { SpreadsheetGrid } from './SpreadsheetGrid';
 import {
-  addressForCell, cellKey, createFormulaEvaluator, editableCellText, normalizeCellInput,
+  addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
 } from './formulas';
 import {
-  applyStyle, cloneWorkbook, deleteColumn, deleteRow, insertColumn, insertRow, selectedCells,
+  applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, nearestCellTemplate, selectedCells,
   resizeColumn, resizeRow, selectionBounds, selectionLabel, uniqueSheetName,
 } from './workbook-model';
 import type { Selection } from './workbook-model';
@@ -25,6 +25,14 @@ interface HistoryState {
 }
 
 const INITIAL_SELECTION: Selection = { anchor: { row: 0, column: 0 }, focus: { row: 0, column: 0 } };
+
+function numberFormatChoice(format: string | undefined): string {
+  if (!format || format === 'General') return 'General';
+  if (isDateNumberFormat(format)) return 'm/d/yy';
+  if (format.includes('$')) return '$#,##0.00;($#,##0.00)';
+  if (format.includes('%')) return '0.0%';
+  return '#,##0.00';
+}
 
 function workbookWithFormulaResults(workbook: WorkbookDocument): WorkbookDocument {
   const result = cloneWorkbook(workbook);
@@ -60,6 +68,7 @@ export function App() {
   const [saving, setSaving] = useState(false);
   const [updateState, setUpdateState] = useState<AppUpdateState>({ currentVersion: '…', phase: 'unavailable', canCheck: false });
   const gridRef = useRef<HTMLDivElement>(null);
+  const formulaRef = useRef<HTMLInputElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const workbook = history.present;
   const activeSheet = workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0];
@@ -80,7 +89,7 @@ export function App() {
     setSelection(INITIAL_SELECTION);
     setEditing(false);
     setDirty(false);
-    setCompatibilityOpen(next.compatibilityIssues.length > 0);
+    setCompatibilityOpen(false);
   }, []);
 
   const undo = useCallback(() => {
@@ -117,6 +126,7 @@ export function App() {
   }, [handleError, openResult]);
 
   const saveWorkbook = useCallback(async (saveAs = false) => {
+    const focusTarget = document.activeElement instanceof HTMLInputElement ? document.activeElement : gridRef.current;
     setSaving(true);
     try {
       const prepared = workbookWithFormulaResults(workbook);
@@ -126,11 +136,27 @@ export function App() {
         setHistory((current) => ({ ...current, present: next }));
         setRecentFiles(result.recentFiles);
         setDirty(false);
-        setMessage('Saved');
+        setMessage(saveAs ? `Saved as ${result.source.displayName}` : `Saved ${result.source.displayName}`);
       }
     } catch (error) { handleError(error); }
-    finally { setSaving(false); }
+    finally {
+      setSaving(false);
+      requestAnimationFrame(() => {
+        if (focusTarget?.isConnected) focusTarget.focus();
+        else gridRef.current?.focus();
+      });
+    }
   }, [handleError, workbook]);
+
+  const reportCompatibility = useCallback(async () => {
+    try {
+      await window.spreadsheet.reportCompatibility({
+        sourceFormat: workbook.source?.format ?? 'unsaved',
+        issues: workbook.compatibilityIssues,
+      });
+      setMessage('Compatibility report opened in GitHub. Review it, then submit.');
+    } catch (error) { handleError(error); }
+  }, [handleError, workbook.compatibilityIssues, workbook.source?.format]);
 
   const newWorkbook = useCallback(() => {
     replaceWorkbook(createBlankWorkbook());
@@ -205,12 +231,15 @@ export function App() {
   const commitEdit = useCallback((move?: 'down' | 'right') => {
     if (!editing) return;
     const point = selection.focus;
-    const normalized = normalizeCellInput(editValue);
     commit((draft) => {
       const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
       const key = cellKey(point.row, point.column);
-      const priorStyle = sheet.cells[key]?.style;
-      if (normalized) sheet.cells[key] = { ...normalized, style: priorStyle };
+      const existing = sheet.cells[key];
+      const template = existing?.style ? existing : nearestCellTemplate(sheet, point.row, point.column) ?? existing;
+      const normalized = normalizeCellInput(editValue, template);
+      const inheritedStyle = existing?.style ?? template?.style;
+      if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
+      else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
       else delete sheet.cells[key];
     });
     setEditing(false);
@@ -232,7 +261,11 @@ export function App() {
   const clearSelection = useCallback(() => {
     commit((draft) => {
       const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
-      selectedCells(sheet, selection).forEach(({ row, column }) => { delete sheet.cells[cellKey(row, column)]; });
+      selectedCells(sheet, selection).forEach(({ row, column, cell }) => {
+        const key = cellKey(row, column);
+        if (cell?.style) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(cell.style) };
+        else delete sheet.cells[key];
+      });
     });
   }, [commit, selection]);
 
@@ -262,8 +295,12 @@ export function App() {
           const column = origin.column + columnOffset;
           if (row >= sheet.rowCount || column >= sheet.columnCount) return;
           const key = cellKey(row, column);
-          const normalized = normalizeCellInput(value);
-          if (normalized) sheet.cells[key] = { ...normalized, style: sheet.cells[key]?.style };
+          const existing = sheet.cells[key];
+          const template = existing?.style ? existing : nearestCellTemplate(sheet, row, column) ?? existing;
+          const normalized = normalizeCellInput(value, template);
+          const inheritedStyle = existing?.style ?? template?.style;
+          if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
+          else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
           else delete sheet.cells[key];
         }));
       });
@@ -314,6 +351,30 @@ export function App() {
   const formatSelection = useCallback((style: Partial<CellStyle>) => {
     commit((draft) => applyStyle(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection, style));
   }, [commit, selection]);
+
+  const applyNumberFormat = useCallback((numberFormat: string) => {
+    commit((draft) => {
+      const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
+      selectedCells(sheet, selection).forEach(({ row, column, cell }) => {
+        const key = cellKey(row, column);
+        const style = { ...cell?.style, numberFormat };
+        if (!cell || cell.formula || cell.value === null) {
+          sheet.cells[key] = { value: cell?.value ?? null, valueType: cell?.valueType ?? 'blank', ...cell, style };
+          return;
+        }
+        const normalized = normalizeCellInput(String(cell.value), { ...cell, style });
+        sheet.cells[key] = { ...(normalized ?? cell), style };
+      });
+    });
+  }, [commit, selection]);
+
+  const fillSelectedCells = useCallback((source: Selection, target: Selection) => {
+    commit((draft) => fillSelection(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, source, target));
+  }, [commit]);
+
+  const pickFormulaReference = useCallback((row: number, column: number) => {
+    setEditValue((current) => `${current}${addressForCell(row, column)}`);
+  }, []);
 
   const selectionStats = useMemo(() => {
     const values = selectedCells(activeSheet, selection)
@@ -385,7 +446,7 @@ export function App() {
   }, [commit, workbook.sheets.length]);
 
   const selectedStyle = activeCell?.style ?? {};
-  const numberFormat = selectedStyle.numberFormat ?? 'General';
+  const numberFormat = numberFormatChoice(selectedStyle.numberFormat);
   const updatePresentation = presentUpdate(updateState);
 
   const runUpdateAction = async (action: UpdateAction) => {
@@ -458,8 +519,8 @@ export function App() {
             <label className="color-control fill-control" title="Fill color"><span /><input type="color" value={selectedStyle.fillColor ?? '#fff4be'} onChange={(event) => formatSelection({ fillColor: event.target.value })} /></label>
           </div>
           <div className="tool-group">
-            <select aria-label="Number format" value={numberFormat} onChange={(event) => formatSelection({ numberFormat: event.target.value })}>
-              <option value="General">General</option><option value="#0.00">Number</option><option value="$#,##0.00">Currency</option><option value="0.0%">Percent</option>
+            <select aria-label="Number format" value={numberFormat} onChange={(event) => applyNumberFormat(event.target.value)}>
+              <option value="General">General</option><option value="#,##0.00">Number</option><option value="$#,##0.00;($#,##0.00)">Currency</option><option value="0.0%">Percent</option><option value="m/d/yy">Date</option>
             </select>
             <IconButton label="Align left" active={selectedStyle.horizontal === 'left'} onClick={() => formatSelection({ horizontal: 'left' })}><AlignLeft size={16} /></IconButton>
             <IconButton label="Align center" active={selectedStyle.horizontal === 'center'} onClick={() => formatSelection({ horizontal: 'center' })}><AlignCenter size={16} /></IconButton>
@@ -487,6 +548,7 @@ export function App() {
           <div className="name-box">{selectionLabel(selection)}</div>
           <FunctionSquare size={15} aria-hidden="true" />
           <input
+            ref={formulaRef}
             value={editing ? editValue : editableCellText(activeCell)}
             aria-label="Formula bar"
             placeholder="Enter a value or formula"
@@ -521,15 +583,22 @@ export function App() {
           onCancelEdit={() => { setEditing(false); gridRef.current?.focus(); }}
           onStartEdit={startEdit}
           onSelectionChange={(next) => { setSelection(next); setEditing(false); gridRef.current?.focus(); }}
+          onFillSelection={fillSelectedCells}
+          onPickFormulaReference={pickFormulaReference}
+          referencePicking={editing && editValue.trimStart().startsWith('=')}
           onColumnResize={(column, width) => commit((draft) => resizeColumn(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, column, width))}
           onRowResize={(row, height) => commit((draft) => resizeRow(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, row, height))}
           onKeyDown={gridKeyDown}
         />
         {compatibilityOpen && workbook.compatibilityIssues.length ? (
           <aside className="compatibility-panel">
-            <div><div><strong>Compatibility notes</strong><span>Core cells and formatting are editable.</span></div><IconButton label="Close" onClick={() => setCompatibilityOpen(false)}><X size={15} /></IconButton></div>
-            <p>For advanced Excel features, keep the original file and use Save As.</p>
+            <div><div><strong>Compatibility notes</strong><span>Detected when this workbook was opened.</span></div><IconButton label="Close" onClick={() => setCompatibilityOpen(false)}><X size={15} /></IconButton></div>
+            <p>Save updates the current file. Save As creates a separate file. Features below may change if TXT Sheets cannot preserve them yet.</p>
             <ul>{workbook.compatibilityIssues.map((issue, index) => <li key={`${issue.feature}-${index}`}><strong>{issue.feature}</strong><span>{issue.detail}</span></li>)}</ul>
+            <div className="compatibility-report">
+              <button type="button" onClick={() => void reportCompatibility()}><Bug size={14} /> Report these issues</button>
+              <small>Opens a prefilled GitHub issue with app and system details only—never the file name or contents.</small>
+            </div>
           </aside>
         ) : null}
       </section>

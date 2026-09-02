@@ -1,7 +1,7 @@
 {
   "name": "txt-sheets",
   "productName": "TXT Sheets",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A beautiful, minimal, local-first spreadsheet application for Windows.",
   "main": "dist/main/main.cjs",
   "private": true,

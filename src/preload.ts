@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppCommand, AppUpdateState, SpreadsheetApi, UpdatePhase, WorkbookDocument } from './shared/types';
+import type { AppCommand, AppUpdateState, CompatibilityReportRequest, SpreadsheetApi, UpdatePhase, WorkbookDocument } from './shared/types';
 
 const UPDATE_PHASES = new Set<UpdatePhase>(['idle', 'checking', 'available', 'downloading', 'downloaded', 'up-to-date', 'error', 'unavailable']);
 
@@ -19,6 +19,7 @@ const api: SpreadsheetApi = {
   openRecent: (id) => ipcRenderer.invoke('workbooks:open-recent', id),
   save: (workbook) => ipcRenderer.invoke('workbooks:save', workbook),
   saveAs: (workbook) => ipcRenderer.invoke('workbooks:save-as', workbook),
+  reportCompatibility: (request: CompatibilityReportRequest) => ipcRenderer.invoke('workbooks:report-compatibility', request),
   getRecentFiles: () => ipcRenderer.invoke('workbooks:recent'),
   getRecovery: () => ipcRenderer.invoke('workbooks:recovery'),
   writeRecovery: (workbook: WorkbookDocument) => ipcRenderer.invoke('workbooks:write-recovery', workbook),

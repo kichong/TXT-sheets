@@ -194,8 +194,8 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
           consume();
           return parseFunction(name);
         }
-        const reference = parseReference();
-        if (reference !== null) return reference;
+        const startsReference = parseCellAddress(peek().value) !== null || peek(1).value === '!';
+        if (startsReference) return parseReference();
       }
       consume();
       return '#NAME?';
@@ -252,11 +252,48 @@ export function editableCellText(cell: CellData | undefined): string {
   return String(cell.value);
 }
 
-export function normalizeCellInput(input: string): CellData | undefined {
+export function isDateNumberFormat(format: string | undefined): boolean {
+  if (!format) return false;
+  const semantic = format.replace(/"[^"]*"/gu, '').replace(/\[[^\]]*\]/gu, '');
+  return /(?:^|[^a-z])[dmy]{1,4}(?:[^a-z]|$)/iu.test(semantic);
+}
+
+function parseDateInput(input: string, template?: CellData): string | null {
+  const match = /^(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2}|\d{4}))?$/u.exec(input.trim());
+  if (!match) return null;
+  const templateYear = typeof template?.value === 'string' && template.valueType === 'date'
+    ? Number(template.value.slice(0, 4))
+    : new Date().getFullYear();
+  const suppliedYear = match[3] ? Number(match[3]) : templateYear;
+  const year = suppliedYear < 100 ? 2000 + suppliedYear : suppliedYear;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return date.toISOString().slice(0, 10);
+}
+
+function parseFormattedNumber(input: string): number | null {
+  const trimmed = input.trim();
+  const negative = /^\(.*\)$/u.test(trimmed);
+  const cleaned = trimmed.replace(/[,$%()\s]/gu, '');
+  if (!cleaned || !Number.isFinite(Number(cleaned))) return null;
+  const value = Number(cleaned) * (trimmed.includes('%') ? 0.01 : 1);
+  return negative ? -value : value;
+}
+
+export function normalizeCellInput(input: string, template?: CellData): CellData | undefined {
   if (input === '') return undefined;
   if (input.startsWith('=')) return { value: null, formula: input, valueType: 'number' };
   const trimmed = input.trim();
-  if (trimmed !== '' && Number.isFinite(Number(trimmed))) return { value: Number(trimmed), valueType: 'number' };
+  if (isDateNumberFormat(template?.style?.numberFormat)) {
+    const date = parseDateInput(trimmed, template);
+    if (date) return { value: date, valueType: 'date' };
+  }
+  const formattedNumber = parseFormattedNumber(trimmed);
+  if (formattedNumber !== null && (/^[+\-]?(?:\d|[.,$%()\s])+$/u.test(trimmed))) {
+    return { value: formattedNumber, valueType: 'number' };
+  }
   if (/^(true|false)$/iu.test(trimmed)) return { value: trimmed.toLowerCase() === 'true', valueType: 'boolean' };
   return { value: input, valueType: 'text' };
 }

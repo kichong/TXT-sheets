@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createBlankWorkbook } from '../src/shared/types';
-import { cellKey, createFormulaEvaluator } from '../src/renderer/formulas';
+import { cellKey, createFormulaEvaluator, normalizeCellInput } from '../src/renderer/formulas';
+import { fillSelection } from '../src/renderer/workbook-model';
 import { FORMULA_FUNCTIONS } from '../src/renderer/formula-functions';
 
 describe('formula evaluator', () => {
@@ -24,6 +25,46 @@ describe('formula evaluator', () => {
     expect(evaluator.evaluateFormula(sheet.id, '=A1*B1')).toBe(144);
     expect(evaluator.evaluateFormula(sheet.id, '=A1/B1')).toBe(4);
     expect(evaluator.evaluateFormula(sheet.id, '=$A$1/$B$1')).toBe(4);
+    expect(evaluator.evaluateFormula(sheet.id, '= ( A1 ) - ( B1 )')).toBe(18);
+  });
+
+  it('treats referenced blank cells as zero in arithmetic', () => {
+    const workbook = createBlankWorkbook();
+    const sheet = workbook.sheets[0];
+    sheet.cells[cellKey(0, 1)] = { value: 19.99, valueType: 'number' };
+    expect(createFormulaEvaluator(workbook).evaluateFormula(sheet.id, '=A1-B1')).toBe(-19.99);
+  });
+
+  it('adjusts relative references when a formula is dragged to new rows', () => {
+    const workbook = createBlankWorkbook();
+    const sheet = workbook.sheets[0];
+    sheet.cells[cellKey(28, 5)] = { value: 100, valueType: 'number' };
+    sheet.cells[cellKey(28, 6)] = { value: 25, valueType: 'number' };
+    sheet.cells[cellKey(29, 5)] = { value: 80, valueType: 'number' };
+    sheet.cells[cellKey(29, 6)] = { value: 30, valueType: 'number' };
+    sheet.cells[cellKey(28, 7)] = { value: null, formula: '=F29-G29', valueType: 'number', style: { numberFormat: '$#,##0.00' } };
+    fillSelection(sheet, { anchor: { row: 28, column: 7 }, focus: { row: 28, column: 7 } }, { anchor: { row: 28, column: 7 }, focus: { row: 29, column: 7 } });
+
+    expect(sheet.cells[cellKey(29, 7)].formula).toBe('=F30-G30');
+    expect(sheet.cells[cellKey(29, 7)].style?.numberFormat).toBe('$#,##0.00');
+    expect(createFormulaEvaluator(workbook).evaluateCell(sheet.id, 29, 7)).toBe(50);
+  });
+
+  it('preserves function names and absolute references during drag fill', () => {
+    const workbook = createBlankWorkbook();
+    const sheet = workbook.sheets[0];
+    sheet.cells[cellKey(0, 2)] = { value: null, formula: '=LOG10(A1)+$B$2', cachedValue: 2, valueType: 'number' };
+    fillSelection(sheet, { anchor: { row: 0, column: 2 }, focus: { row: 0, column: 2 } }, { anchor: { row: 0, column: 2 }, focus: { row: 0, column: 3 } });
+    expect(sheet.cells[cellKey(0, 3)].formula).toBe('=LOG10(B1)+$B$2');
+  });
+
+  it('parses continued dates and formatted currency using the prior cell format', () => {
+    expect(normalizeCellInput('8/24', { value: '2026-07-24', valueType: 'date', style: { numberFormat: 'm/d/yy' } })).toEqual({
+      value: '2026-08-24', valueType: 'date',
+    });
+    expect(normalizeCellInput('$21.66', { value: 40.47, valueType: 'number', style: { numberFormat: '$#,##0.00' } })).toEqual({
+      value: 21.66, valueType: 'number',
+    });
   });
 
   it('shows the cached result for imported formulas outside the first registry', () => {
