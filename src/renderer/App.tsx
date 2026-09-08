@@ -592,12 +592,12 @@ export function App() {
         />
         {compatibilityOpen && workbook.compatibilityIssues.length ? (
           <aside className="compatibility-panel">
-            <div><div><strong>Compatibility notes</strong><span>Detected when this workbook was opened.</span></div><IconButton label="Close" onClick={() => setCompatibilityOpen(false)}><X size={15} /></IconButton></div>
-            <p>Save updates the current file. Save As creates a separate file. Features below may change if TXT Sheets cannot preserve them yet.</p>
+            <div><div><strong>Compatibility</strong><span>Features detected when this file was opened</span></div><IconButton label="Close" onClick={() => setCompatibilityOpen(false)}><X size={15} /></IconButton></div>
+            <p>Saving may change the features below. Use Save As to keep the original file unchanged.</p>
             <ul>{workbook.compatibilityIssues.map((issue, index) => <li key={`${issue.feature}-${index}`}><strong>{issue.feature}</strong><span>{issue.detail}</span></li>)}</ul>
             <div className="compatibility-report">
-              <button type="button" onClick={() => void reportCompatibility()}><Bug size={14} /> Report these issues</button>
-              <small>Opens a prefilled GitHub issue with app and system details only—never the file name or contents.</small>
+              <button type="button" onClick={() => void reportCompatibility()}><Bug size={14} /> Review report on GitHub</button>
+              <small>Opens a draft GitHub issue containing compatibility categories only. Review it before submitting. Workbook names, sheet names, cells, formulas, comments, authors, and paths stay private.</small>
             </div>
           </aside>
         ) : null}

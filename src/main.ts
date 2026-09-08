@@ -176,7 +176,7 @@ function installIpcHandlers(): void {
       ...value,
       appName: 'TXT Sheets',
       appVersion: app.getVersion(),
-      operatingSystem: `${process.platform} ${process.getSystemVersion()}`,
+      operatingSystem: process.platform,
       repositoryUrl: 'https://github.com/kichong/TXT-sheets',
     }));
   });
