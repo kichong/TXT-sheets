@@ -125,18 +125,34 @@ export function App() {
     catch (error) { handleError(error); }
   }, [handleError, openResult]);
 
-  const saveWorkbook = useCallback(async (saveAs = false) => {
+  const saveWorkbook = useCallback(async (saveAs = false, closeWhenDone = false) => {
+    if (saving) return;
     const focusTarget = document.activeElement instanceof HTMLInputElement ? document.activeElement : gridRef.current;
     setSaving(true);
     try {
-      const prepared = workbookWithFormulaResults(workbook);
+      const current = cloneWorkbook(workbook);
+      if (editing) {
+        const sheet = current.sheets.find((item) => item.id === current.activeSheetId)!;
+        const { row, column } = selection.focus;
+        const key = cellKey(row, column);
+        const existing = sheet.cells[key];
+        const template = existing?.style ? existing : nearestCellTemplate(sheet, row, column) ?? existing;
+        const normalized = normalizeCellInput(editValue, template);
+        const inheritedStyle = existing?.style ?? template?.style;
+        if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
+        else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
+        else delete sheet.cells[key];
+      }
+      const prepared = workbookWithFormulaResults(current);
       const result = saveAs ? await window.spreadsheet.saveAs(prepared) : await window.spreadsheet.save(prepared);
       if (result.status === 'saved' && result.source) {
         const next = { ...prepared, source: result.source, title: result.source.displayName.replace(/\.(xlsx|csv|tsv)$/iu, '') };
         setHistory((current) => ({ ...current, present: next }));
         setRecentFiles(result.recentFiles);
         setDirty(false);
+        setEditing(false);
         setMessage(saveAs ? `Saved as ${result.source.displayName}` : `Saved ${result.source.displayName}`);
+        if (closeWhenDone) window.spreadsheet.requestCloseAfterSave();
       }
     } catch (error) { handleError(error); }
     finally {
@@ -146,7 +162,7 @@ export function App() {
         else gridRef.current?.focus();
       });
     }
-  }, [handleError, workbook]);
+  }, [editValue, editing, handleError, saving, selection.focus, workbook]);
 
   const reportCompatibility = useCallback(async () => {
     try {
@@ -168,6 +184,7 @@ export function App() {
     if (command === 'open') void openWorkbook();
     if (command === 'save') void saveWorkbook(false);
     if (command === 'save-as') void saveWorkbook(true);
+    if (command === 'save-and-close') void saveWorkbook(false, true);
     if (command === 'undo') undo();
     if (command === 'redo') redo();
     if (command === 'find') { setFindOpen(true); requestAnimationFrame(() => findRef.current?.focus()); }
@@ -205,11 +222,11 @@ export function App() {
   }, [handleError, openResult, replaceWorkbook]);
 
   useEffect(() => {
-    window.spreadsheet.setDirty(dirty);
+    window.spreadsheet.setDirty(dirty || editing);
     if (!dirty) return;
     const timer = window.setTimeout(() => { void window.spreadsheet.writeRecovery(workbookWithFormulaResults(workbook)).catch(handleError); }, 800);
     return () => window.clearTimeout(timer);
-  }, [dirty, handleError, workbook]);
+  }, [dirty, editing, handleError, workbook]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

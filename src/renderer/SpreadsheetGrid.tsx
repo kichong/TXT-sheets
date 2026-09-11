@@ -1,5 +1,5 @@
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
 import type { CellData, SheetDocument } from '../shared/types';
 import type { FormulaEvaluator } from './formulas';
@@ -13,6 +13,13 @@ const ROW_HEADER_WIDTH = 46;
 const COLUMN_HEADER_HEIGHT = 26;
 const DEFAULT_COLUMN_WIDTH = 96;
 const DEFAULT_ROW_HEIGHT = 25;
+
+const observeGridRect: typeof observeElementRect = (instance, callback) => observeElementRect(instance, (rect) => {
+  callback({
+    width: instance.scrollElement?.clientWidth ?? rect.width,
+    height: instance.scrollElement?.clientHeight ?? rect.height,
+  });
+});
 
 interface MergeInfo { masterRow: number; masterColumn: number; endRow: number; endColumn: number; }
 
@@ -94,6 +101,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     onColumnResize, onRowResize, onKeyDown,
   } = props;
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const revealKeyboardSelection = useRef(false);
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
   const dragging = useRef(false);
   const fillSource = useRef<Selection | null>(null);
@@ -104,16 +112,31 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
   const rowVirtualizer = useVirtualizer({
     count: sheet.rowCount,
     getScrollElement: () => scrollRef.current,
+    observeElementRect: observeGridRect,
     estimateSize: (index) => sheet.rowHeights[String(index)] ?? DEFAULT_ROW_HEIGHT,
     overscan: 8,
+    // Cell coordinates include the header; reserve its space at the trailing
+    // edge so auto alignment reveals the whole cell beneath the pinned header.
+    paddingEnd: COLUMN_HEADER_HEIGHT,
+    scrollPaddingEnd: COLUMN_HEADER_HEIGHT,
   });
   const columnVirtualizer = useVirtualizer({
     horizontal: true,
     count: sheet.columnCount,
     getScrollElement: () => scrollRef.current,
+    observeElementRect: observeGridRect,
     estimateSize: (index) => sheet.columnWidths[String(index)] ?? DEFAULT_COLUMN_WIDTH,
     overscan: 5,
+    paddingEnd: ROW_HEADER_WIDTH,
+    scrollPaddingEnd: ROW_HEADER_WIDTH,
   });
+
+  useLayoutEffect(() => {
+    if (!revealKeyboardSelection.current) return;
+    revealKeyboardSelection.current = false;
+    rowVirtualizer.scrollToIndex(selection.focus.row, { align: 'auto' });
+    columnVirtualizer.scrollToIndex(selection.focus.column, { align: 'auto' });
+  }, [selection, rowVirtualizer, columnVirtualizer]);
 
   useEffect(() => {
     rowVirtualizer.measure();
@@ -239,11 +262,16 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
       role="grid"
       aria-label={`${sheet.name} spreadsheet grid`}
       onKeyDown={onKeyDown}
+      onKeyDownCapture={(event) => {
+        revealKeyboardSelection.current = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Tab'].includes(event.key)
+          && (event.target === event.currentTarget || (event.target as HTMLElement).classList.contains('cell-editor'));
+      }}
+      onPointerDownCapture={() => { revealKeyboardSelection.current = false; }}
       onPointerUp={finishPointerAction}
       onPointerCancel={finishPointerAction}
       onScroll={(event) => setScroll({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })}
     >
-      <div className="grid-canvas" style={{ width: ROW_HEADER_WIDTH + columnVirtualizer.getTotalSize(), height: COLUMN_HEADER_HEIGHT + rowVirtualizer.getTotalSize() }}>
+      <div className="grid-canvas" style={{ width: columnVirtualizer.getTotalSize(), height: rowVirtualizer.getTotalSize() }}>
         {columns.map((column) => (
           <div
             role="columnheader"

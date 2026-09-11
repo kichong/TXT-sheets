@@ -20,6 +20,7 @@ if (!window.spreadsheet) {
     downloadUpdate: async () => ({ currentVersion: '0.2.0', phase: 'unavailable', canCheck: false }),
     installUpdate: async () => undefined,
     setDirty: () => undefined,
+    requestCloseAfterSave: () => undefined,
     onCommand: () => () => undefined,
     onExternalFile: () => () => undefined,
     onUpdateState: () => () => undefined,

@@ -29,6 +29,7 @@ const api: SpreadsheetApi = {
   downloadUpdate: async () => parseUpdateState(await ipcRenderer.invoke('updates:download')),
   installUpdate: () => ipcRenderer.invoke('updates:install'),
   setDirty: (dirty) => ipcRenderer.send('workbooks:dirty', dirty),
+  requestCloseAfterSave: () => ipcRenderer.send('workbooks:close-after-save'),
   onCommand: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, command: AppCommand) => callback(command);
     ipcRenderer.on('app:command', listener);

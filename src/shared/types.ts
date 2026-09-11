@@ -115,7 +115,7 @@ export interface AppUpdateState {
   message?: string;
 }
 
-export type AppCommand = 'new' | 'open' | 'save' | 'save-as' | 'undo' | 'redo' | 'find';
+export type AppCommand = 'new' | 'open' | 'save' | 'save-as' | 'save-and-close' | 'undo' | 'redo' | 'find';
 
 export interface SpreadsheetApi {
   open(): Promise<OpenResult | null>;
@@ -134,6 +134,7 @@ export interface SpreadsheetApi {
   downloadUpdate(): Promise<AppUpdateState>;
   installUpdate(): Promise<void>;
   setDirty(dirty: boolean): void;
+  requestCloseAfterSave(): void;
   onCommand(callback: (command: AppCommand) => void): () => void;
   onExternalFile(callback: () => void): () => void;
   onUpdateState(callback: (state: AppUpdateState) => void): () => void;

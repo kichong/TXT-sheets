@@ -13,6 +13,7 @@ let storage: AppStorage;
 let updateManager: AppUpdateManager;
 let dirty = false;
 let forceClose = false;
+let closePromptOpen = false;
 const pendingExternalPaths: string[] = [];
 
 function queueExternalWorkbook(args: string[]): void {
@@ -196,6 +197,11 @@ function installIpcHandlers(): void {
     updateManager.installUpdate();
   });
   ipcMain.on('workbooks:dirty', (_event, value: unknown) => { dirty = value === true; });
+  ipcMain.on('workbooks:close-after-save', () => {
+    if (dirty) return;
+    forceClose = true;
+    mainWindow?.close();
+  });
 }
 
 async function saveToPathOrCancel(workbook: WorkbookDocument): Promise<SaveResult> {
@@ -225,13 +231,19 @@ function createWindow(): void {
   mainWindow.on('close', (event) => {
     if (!dirty || forceClose) return;
     event.preventDefault();
+    if (closePromptOpen) return;
+    closePromptOpen = true;
     void dialog.showMessageBox(mainWindow!, {
-      type: 'warning', title: 'Unsaved changes', message: 'Close without saving?',
-      detail: 'Your latest work is kept in recovery until you open TXT Sheets again.',
-      buttons: ['Keep editing', 'Close'], defaultId: 0, cancelId: 0,
-    }).then(({ response }) => {
-      if (response === 1) { forceClose = true; mainWindow?.close(); }
-    });
+      type: 'warning', title: 'Unsaved changes', message: 'Save changes before closing?',
+      buttons: ['Save', 'Close without saving', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true,
+    }).then(async ({ response }) => {
+      if (response === 0) sendCommand('save-and-close');
+      else if (response === 1) {
+        await storage.clearRecovery();
+        forceClose = true;
+        mainWindow?.close();
+      }
+    }).finally(() => { closePromptOpen = false; });
   });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
