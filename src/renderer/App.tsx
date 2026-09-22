@@ -8,6 +8,8 @@ import type { KeyboardEvent } from 'react';
 import { createBlankWorkbook } from '../shared/types';
 import type { AppCommand, AppUpdateState, CellStyle, RecentFile, WorkbookDocument } from '../shared/types';
 import { presentUpdate, type UpdateAction } from '../shared/updates';
+import { SheetTabMenu, type SheetMenuTarget } from './SheetTabMenu';
+import { renameWorksheet } from './sheet-actions';
 import { SpreadsheetGrid } from './SpreadsheetGrid';
 import {
   addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
@@ -59,6 +61,7 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('txt-sheets-theme') === 'dark' ? 'dark' : 'light');
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [sheetMenu, setSheetMenu] = useState<SheetMenuTarget | null>(null);
   const [structureMenuOpen, setStructureMenuOpen] = useState(false);
   const [compatibilityOpen, setCompatibilityOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -443,14 +446,6 @@ export function App() {
     setSelection(INITIAL_SELECTION);
   }, [commit]);
 
-  const renameSheet = useCallback((sheetId: string) => {
-    const sheet = workbook.sheets.find((item) => item.id === sheetId);
-    if (!sheet) return;
-    const name = window.prompt('Sheet name', sheet.name)?.trim();
-    if (!name || workbook.sheets.some((item) => item.id !== sheetId && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) return;
-    commit((draft) => { draft.sheets.find((item) => item.id === sheetId)!.name = name; });
-  }, [commit, workbook.sheets]);
-
   const deleteSheet = useCallback((sheetId: string) => {
     if (workbook.sheets.length <= 1) { setMessage('A workbook needs at least one sheet.'); return; }
     if (!window.confirm('Delete this sheet? This can be undone.')) return;
@@ -626,8 +621,19 @@ export function App() {
             <button
               role="tab" aria-selected={sheet.id === workbook.activeSheetId} className={sheet.id === workbook.activeSheetId ? 'is-active' : ''} key={sheet.id}
               onClick={() => { commit((draft) => { draft.activeSheetId = sheet.id; }); setSelection(INITIAL_SELECTION); setDirty(dirty); }}
-              onDoubleClick={() => renameSheet(sheet.id)}
-              onContextMenu={(event) => { event.preventDefault(); deleteSheet(sheet.id); }}
+              onDoubleClick={(event) => setSheetMenu({ id: sheet.id, x: 0, y: 0, trigger: event.currentTarget, rename: true })}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                setSheetMenu({ id: sheet.id, x: event.clientX || rect.left, y: event.clientY || rect.top, trigger: event.currentTarget });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                  event.preventDefault();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setSheetMenu({ id: sheet.id, x: rect.left, y: rect.top, trigger: event.currentTarget });
+                }
+              }}
             >{sheet.name}</button>
           ))}
           <IconButton label="Add sheet" onClick={addSheet}><Plus size={15} /></IconButton>
@@ -649,6 +655,29 @@ export function App() {
         </div>
       </footer>
 
+      {sheetMenu && workbook.sheets.some((sheet) => sheet.id === sheetMenu.id) && <SheetTabMenu
+        key={`${sheetMenu.id}-${sheetMenu.x}-${sheetMenu.y}-${sheetMenu.rename}`}
+        target={sheetMenu}
+        name={workbook.sheets.find((sheet) => sheet.id === sheetMenu.id)!.name}
+        canMoveLeft={workbook.sheets.findIndex((sheet) => sheet.id === sheetMenu.id) > 0}
+        canMoveRight={workbook.sheets.findIndex((sheet) => sheet.id === sheetMenu.id) < workbook.sheets.length - 1}
+        canDelete={workbook.sheets.length > 1}
+        onClose={() => setSheetMenu(null)}
+        onRename={(name) => {
+          const problem = renameWorksheet(cloneWorkbook(workbook), sheetMenu.id, name);
+          if (problem) return problem;
+          commit((draft) => { renameWorksheet(draft, sheetMenu.id, name); });
+          return null;
+        }}
+        onMove={(direction) => commit((draft) => {
+          const index = draft.sheets.findIndex((sheet) => sheet.id === sheetMenu.id);
+          const next = index + direction;
+          if (index < 0 || next < 0 || next >= draft.sheets.length) return;
+          [draft.sheets[index], draft.sheets[next]] = [draft.sheets[next], draft.sheets[index]];
+        })}
+        onAdd={addSheet}
+        onDelete={() => deleteSheet(sheetMenu.id)}
+      />}
       {message ? <div className="toast" role="status">{message}</div> : null}
     </main>
   );
