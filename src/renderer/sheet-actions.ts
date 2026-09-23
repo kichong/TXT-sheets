@@ -1,5 +1,16 @@
 import type { WorkbookDocument } from '../shared/types';
 
+/** Move a worksheet to the boundary before insertionIndex (or after the last sheet). */
+export function reorderWorksheet(workbook: WorkbookDocument, id: string, insertionIndex: number): boolean {
+  const from = workbook.sheets.findIndex((sheet) => sheet.id === id);
+  if (from < 0 || !Number.isInteger(insertionIndex) || insertionIndex < 0 || insertionIndex > workbook.sheets.length) return false;
+  const to = insertionIndex > from ? insertionIndex - 1 : insertionIndex;
+  if (to === from) return false;
+  const [sheet] = workbook.sheets.splice(from, 1);
+  workbook.sheets.splice(to, 0, sheet);
+  return true;
+}
+
 export function renameWorksheet(workbook: WorkbookDocument, id: string, name: string): string | null {
   const sheet = workbook.sheets.find((item) => item.id === id);
   if (!sheet) return 'This sheet is no longer available.';

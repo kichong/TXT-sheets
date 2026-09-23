@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import ExcelJS from 'exceljs';
 import { exportWorkbook, importWorkbook } from '../src/main/workbook-io';
 import { createFormulaEvaluator } from '../src/renderer/formulas';
+import { reorderWorksheet } from '../src/renderer/sheet-actions';
 
 const fixturePath = resolve('tests/fixtures/fidelity-fixture.xlsx');
 
@@ -42,9 +43,11 @@ describe('Excel workbook fidelity', () => {
     const directory = await mkdtemp(join(tmpdir(), 'txt-sheets-roundtrip-'));
     try {
       overview.frozenRows = 3;
+      expect(reorderWorksheet(workbook, overview.id, workbook.sheets.length)).toBe(true);
       const output = join(directory, 'roundtrip.xlsx');
       await writeFile(output, await exportWorkbook(workbook, output));
       const reopened = await importWorkbook(new Uint8Array(await readFile(output)), output, source);
+      expect(reopened.sheets.map((sheet) => sheet.name)).toEqual(['Inputs', 'Overview']);
       const reopenedOverview = reopened.sheets.find((sheet) => sheet.name === 'Overview')!;
       expect(reopenedOverview.merges).toEqual(expect.arrayContaining(['A1:D1', 'A9:C9']));
       expect(reopenedOverview.cells['8:3'].formula).toBe('=SUM(D4:D7)');

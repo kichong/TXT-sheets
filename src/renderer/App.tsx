@@ -9,7 +9,7 @@ import { createBlankWorkbook } from '../shared/types';
 import type { AppCommand, AppUpdateState, CellStyle, RecentFile, WorkbookDocument } from '../shared/types';
 import { presentUpdate, type UpdateAction } from '../shared/updates';
 import { SheetTabMenu, type SheetMenuTarget } from './SheetTabMenu';
-import { renameWorksheet } from './sheet-actions';
+import { renameWorksheet, reorderWorksheet } from './sheet-actions';
 import { SpreadsheetGrid } from './SpreadsheetGrid';
 import {
   addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
@@ -62,6 +62,8 @@ export function App() {
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [sheetMenu, setSheetMenu] = useState<SheetMenuTarget | null>(null);
+  const [sheetDrop, setSheetDrop] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
+  const draggedSheetId = useRef<string | null>(null);
   const [structureMenuOpen, setStructureMenuOpen] = useState(false);
   const [compatibilityOpen, setCompatibilityOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
@@ -457,6 +459,21 @@ export function App() {
     setSelection(INITIAL_SELECTION);
   }, [commit, workbook.sheets.length]);
 
+  const dropSheet = (targetId: string, side: 'before' | 'after') => {
+    const sourceId = draggedSheetId.current;
+    const targetIndex = workbook.sheets.findIndex((sheet) => sheet.id === targetId);
+    if (sourceId && targetIndex >= 0) {
+      const insertionIndex = targetIndex + (side === 'after' ? 1 : 0);
+      const sourceIndex = workbook.sheets.findIndex((sheet) => sheet.id === sourceId);
+      const destinationIndex = insertionIndex > sourceIndex ? insertionIndex - 1 : insertionIndex;
+      if (sourceIndex >= 0 && sourceIndex !== destinationIndex) {
+        commit((draft) => { reorderWorksheet(draft, sourceId, insertionIndex); });
+      }
+    }
+    draggedSheetId.current = null;
+    setSheetDrop(null);
+  };
+
   const selectedStyle = activeCell?.style ?? {};
   const numberFormat = numberFormatChoice(selectedStyle.numberFormat);
   const updatePresentation = presentUpdate(updateState);
@@ -619,7 +636,30 @@ export function App() {
         <div className="sheet-tabs" role="tablist" aria-label="Worksheets">
           {workbook.sheets.map((sheet) => (
             <button
-              role="tab" aria-selected={sheet.id === workbook.activeSheetId} className={sheet.id === workbook.activeSheetId ? 'is-active' : ''} key={sheet.id}
+              role="tab" aria-selected={sheet.id === workbook.activeSheetId}
+              className={[sheet.id === workbook.activeSheetId ? 'is-active' : '', sheetDrop?.id === sheet.id ? `drop-${sheetDrop.side}` : ''].filter(Boolean).join(' ')}
+              key={sheet.id} draggable={workbook.sheets.length > 1}
+              title="Drag to reorder sheets; use the context menu to move with a keyboard"
+              onDragStart={(event) => {
+                draggedSheetId.current = sheet.id;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', sheet.id);
+              }}
+              onDragOver={(event) => {
+                if (!draggedSheetId.current) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const rect = event.currentTarget.getBoundingClientRect();
+                const side = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after';
+                if (sheetDrop?.id !== sheet.id || sheetDrop.side !== side) setSheetDrop({ id: sheet.id, side });
+              }}
+              onDrop={(event) => {
+                if (!draggedSheetId.current) return;
+                event.preventDefault();
+                const rect = event.currentTarget.getBoundingClientRect();
+                dropSheet(sheet.id, event.clientX < rect.left + rect.width / 2 ? 'before' : 'after');
+              }}
+              onDragEnd={() => { draggedSheetId.current = null; setSheetDrop(null); }}
               onClick={() => { commit((draft) => { draft.activeSheetId = sheet.id; }); setSelection(INITIAL_SELECTION); setDirty(dirty); }}
               onDoubleClick={(event) => setSheetMenu({ id: sheet.id, x: 0, y: 0, trigger: event.currentTarget, rename: true })}
               onContextMenu={(event) => {
@@ -673,7 +713,7 @@ export function App() {
           const index = draft.sheets.findIndex((sheet) => sheet.id === sheetMenu.id);
           const next = index + direction;
           if (index < 0 || next < 0 || next >= draft.sheets.length) return;
-          [draft.sheets[index], draft.sheets[next]] = [draft.sheets[next], draft.sheets[index]];
+          reorderWorksheet(draft, sheetMenu.id, next + (direction > 0 ? 1 : 0));
         })}
         onAdd={addSheet}
         onDelete={() => deleteSheet(sheetMenu.id)}

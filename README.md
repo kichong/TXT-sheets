@@ -19,7 +19,7 @@ TXT Sheets follows the focused desktop design and release architecture of [TXT D
 ## Essential features
 
 - Create, open, edit, and save `.xlsx`, `.csv`, and `.tsv` files
-- Multiple worksheets with add, rename, delete, and keyboard-friendly navigation
+- Multiple worksheets with add, rename, delete, drag-and-drop reordering, and keyboard-friendly navigation
 - Direct cell editing, a formula bar, copy/cut/paste, undo/redo, and find
 - Drag-resizable rows and columns with dimensions preserved in Excel workbooks
 - Row and column insertion/deletion

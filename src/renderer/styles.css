@@ -428,7 +428,11 @@ select:focus-visible,
 
 .sheet-tabs { flex: 1 1 auto; min-width: 0; height: 100%; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 .sheet-tabs::-webkit-scrollbar { display: none; }
-.sheet-tabs > button[role="tab"] { flex: 0 0 auto; height: 28px; min-width: 78px; max-width: 150px; padding: 0 13px; overflow: hidden; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-tabs > button[role="tab"] { position: relative; flex: 0 0 auto; height: 28px; min-width: 78px; max-width: 150px; padding: 0 13px; overflow: hidden; border: 0; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-tabs > button[role="tab"][draggable="true"] { cursor: grab; }
+.sheet-tabs > button[role="tab"][draggable="true"]:active { cursor: grabbing; }
+.sheet-tabs > button[role="tab"].drop-before { box-shadow: inset 3px 0 var(--accent-strong); }
+.sheet-tabs > button[role="tab"].drop-after { box-shadow: inset -3px 0 var(--accent-strong); }
 .sheet-tabs > button[role="tab"]:hover { color: var(--text); background: var(--chrome-muted); }
 .sheet-tabs > button[role="tab"].is-active { color: var(--accent-strong); background: var(--accent-soft); font-weight: 650; }
 .status-summary { flex: 0 0 auto; gap: 14px; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
