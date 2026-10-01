@@ -544,8 +544,8 @@ export function App() {
             <IconButton label="Bold" active={selectedStyle.bold} onClick={() => formatSelection({ bold: !selectedStyle.bold })}><Bold size={16} /></IconButton>
             <IconButton label="Italic" active={selectedStyle.italic} onClick={() => formatSelection({ italic: !selectedStyle.italic })}><Italic size={16} /></IconButton>
             <IconButton label="Underline" active={selectedStyle.underline} onClick={() => formatSelection({ underline: !selectedStyle.underline })}><Underline size={16} /></IconButton>
-            <label className="color-control" title="Text color"><span>A</span><input type="color" value={selectedStyle.textColor ?? '#202124'} onChange={(event) => formatSelection({ textColor: event.target.value })} /></label>
-            <label className="color-control fill-control" title="Fill color"><span /><input type="color" value={selectedStyle.fillColor ?? '#fff4be'} onChange={(event) => formatSelection({ fillColor: event.target.value })} /></label>
+            <label className="color-control" title="Text color"><span>A</span><input aria-label="Text color" type="color" value={selectedStyle.textColor ?? '#202124'} onChange={(event) => formatSelection({ textColor: event.target.value })} /></label>
+            <label className="color-control fill-control" title="Fill color"><span /><input aria-label="Fill color" type="color" value={selectedStyle.fillColor ?? '#fff4be'} onChange={(event) => formatSelection({ fillColor: event.target.value })} /></label>
           </div>
           <div className="tool-group">
             <select aria-label="Number format" value={numberFormat} onChange={(event) => applyNumberFormat(event.target.value)}>
