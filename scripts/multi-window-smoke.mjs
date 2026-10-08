@@ -126,8 +126,11 @@ try {
   await new Promise((done) => application.process().exitCode !== null ? done() : application.process().once('exit', done));
   application = await electron.launch({ executablePath, args: [...baseArgs, `--user-data-dir=${profile}`], cwd: root });
   const recoveredPages = await waitWindows(2);
-  const recovered = recoveredPages[0];
-  const fresh = recoveredPages[1];
+  const drafts = await Promise.all(recoveredPages.map((page) => page.evaluate(({ api, docs }) => docs ? window[api].readRecovery() : window[api].getRecovery(), { api, docs })));
+  const recoveryIndex = drafts.findIndex((draft) => draft !== null);
+  assert.notEqual(recoveryIndex, -1, 'The unsaved recovery draft must remain available after restart');
+  const recovered = recoveredPages[recoveryIndex];
+  const fresh = recoveredPages[1 - recoveryIndex];
   if (docs) await recovered.getByRole('button', { name: 'Restore draft', exact: true }).click();
   await recovered.waitForTimeout(300);
   assert.ok((await content(recovered)).includes('first unsaved'));
