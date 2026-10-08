@@ -17,7 +17,7 @@
 | Grid editing, selection, resize, fill | `src/renderer/SpreadsheetGrid.tsx`, `src/renderer/workbook-model.ts` | `src/renderer/App.tsx`, `tests/dimensions.test.ts` |
 | Formulas and named functions | `src/renderer/formulas.ts`, `src/renderer/formula-functions.ts` | `tests/formulas.test.ts`, `src/shared/types.ts` |
 | XLSX/CSV/TSV import and export | `src/main/workbook-io.ts` | `src/shared/types.ts`, `tests/workbook-roundtrip.test.ts`, `tests/fixtures/` |
-| File lifecycle, recent files, recovery, launch files | `src/main.ts`, `src/main/storage.ts`, `src/main/launch-files.ts` | `src/preload.ts`, `tests/launch-files.test.ts` |
+| File lifecycle, multiple windows, recent files, per-window recovery, launch files | `src/main.ts`, `src/main/storage.ts`, `src/main/launch-files.ts` | `src/preload.ts`, `tests/launch-files.test.ts`, `tests/window-recovery.test.ts`, `scripts/multi-window-smoke.mjs` |
 | Electron API / IPC contract | `src/main.ts`, `src/preload.ts`, `src/shared/types.ts` | `src/global.d.ts`, `src/renderer/browser-mock.ts` |
 | Updates and releases | `src/main/updater.ts`, `src/shared/updates.ts`, `package.json` | `.github/workflows/release.yml`, `tests/updates.test.ts` |
 | Compatibility reporting | `src/shared/compatibility-report.ts` | `src/main.ts`, `tests/compatibility-report.test.ts` |

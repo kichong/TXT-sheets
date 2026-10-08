@@ -118,10 +118,11 @@ export interface AppUpdateState {
 export type AppCommand = 'new' | 'open' | 'save' | 'save-as' | 'save-and-close' | 'undo' | 'redo' | 'find';
 
 export interface SpreadsheetApi {
+  newWindow(): Promise<void>;
   open(): Promise<OpenResult | null>;
   openExternal(): Promise<OpenResult | null>;
   cancelExternal(): void;
-  openRecent(id: string): Promise<OpenResult>;
+  openRecent(id: string): Promise<OpenResult | null>;
   save(workbook: WorkbookDocument): Promise<SaveResult>;
   saveAs(workbook: WorkbookDocument): Promise<SaveResult>;
   reportCompatibility(request: CompatibilityReportRequest): Promise<void>;

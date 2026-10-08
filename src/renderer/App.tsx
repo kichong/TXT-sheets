@@ -180,9 +180,8 @@ export function App() {
   }, [handleError, workbook.compatibilityIssues, workbook.source?.format]);
 
   const newWorkbook = useCallback(() => {
-    replaceWorkbook(createBlankWorkbook());
-    void window.spreadsheet.clearRecovery();
-  }, [replaceWorkbook]);
+    void window.spreadsheet.newWindow().catch(handleError);
+  }, [handleError]);
 
   const runCommand = useCallback((command: AppCommand) => {
     if (command === 'new') newWorkbook();

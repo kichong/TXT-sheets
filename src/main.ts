@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { AppStorage } from './main/storage';
@@ -8,12 +9,33 @@ import { exportWorkbook, formatForPath, importWorkbook } from './main/workbook-i
 import { buildCompatibilityReportUrl } from './shared/compatibility-report';
 import type { AppCommand, CompatibilityReportRequest, OpenResult, SaveResult, WorkbookDocument, WorkbookFormat } from './shared/types';
 
-let mainWindow: BrowserWindow | null = null;
+interface FileWindow {
+  window: BrowserWindow;
+  dirty: boolean;
+  forceClose: boolean;
+  closePromptOpen: boolean;
+  recoveryKey: string;
+  externalPath?: string;
+  initialResult?: OpenResult;
+}
+const windows = new Map<number, FileWindow>();
 let storage: AppStorage;
 let updateManager: AppUpdateManager;
-let dirty = false;
-let forceClose = false;
-let closePromptOpen = false;
+
+function focusedWindow(): BrowserWindow | null {
+  return BrowserWindow.getFocusedWindow() ?? [...windows.values()].at(-1)?.window ?? null;
+}
+
+function fileWindow(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): FileWindow {
+  const state = windows.get(event.sender.id);
+  if (!state) throw new Error('The file window is no longer available.');
+  return state;
+}
+
+function anyDirty(): boolean {
+  return [...windows.values()].some((state) => state.dirty);
+}
+
 const pendingExternalPaths: string[] = [];
 
 function queueExternalWorkbook(args: string[]): void {
@@ -24,7 +46,7 @@ function queueExternalWorkbook(args: string[]): void {
 queueExternalWorkbook(process.argv.slice(1));
 
 function sendCommand(command: AppCommand): void {
-  mainWindow?.webContents.send('app:command', command);
+  focusedWindow()?.webContents.send('app:command', command);
 }
 
 function createApplicationMenu(): void {
@@ -63,7 +85,7 @@ function createApplicationMenu(): void {
         { type: 'separator' },
         {
           label: `About TXT Sheets v${app.getVersion()}`,
-          click: () => void dialog.showMessageBox(mainWindow!, {
+          click: () => void dialog.showMessageBox(focusedWindow()!, {
             type: 'info', title: 'About TXT Sheets', message: `TXT Sheets v${app.getVersion()}`,
             detail: 'A free, open-source spreadsheet application.\n\nLicensed under Apache License 2.0.', buttons: ['OK'],
           }),
@@ -79,12 +101,11 @@ async function openPath(path: string): Promise<OpenResult> {
   const source = await storage.sourceFor(path, format);
   const workbook = await importWorkbook(new Uint8Array(await readFile(path)), path, source);
   const recentFiles = await storage.remember(path, format);
-  dirty = false;
   return { workbook, recentFiles };
 }
 
-async function chooseOpenPath(): Promise<string | null> {
-  const result = await dialog.showOpenDialog(mainWindow!, {
+async function chooseOpenPath(owner: BrowserWindow): Promise<string | null> {
+  const result = await dialog.showOpenDialog(owner, {
     title: 'Open a spreadsheet',
     properties: ['openFile'],
     filters: [
@@ -100,9 +121,9 @@ function safeTitle(title: string): string {
   return title.replace(/[<>:"/\\|?*\u0000-\u001F]/gu, '').trim() || 'Untitled workbook';
 }
 
-async function chooseSavePath(workbook: WorkbookDocument): Promise<string | null> {
+async function chooseSavePath(workbook: WorkbookDocument, owner: BrowserWindow): Promise<string | null> {
   const preferred = workbook.source?.format ?? 'xlsx';
-  const result = await dialog.showSaveDialog(mainWindow!, {
+  const result = await dialog.showSaveDialog(owner, {
     title: 'Save spreadsheet as',
     defaultPath: `${safeTitle(workbook.title)}.${preferred}`,
     filters: [
@@ -114,14 +135,14 @@ async function chooseSavePath(workbook: WorkbookDocument): Promise<string | null
   return result.canceled ? null : result.filePath ?? null;
 }
 
-async function saveToPath(workbook: WorkbookDocument, path: string): Promise<SaveResult> {
+async function saveToPath(workbook: WorkbookDocument, path: string, state: FileWindow): Promise<SaveResult> {
   const format = formatForPath(path);
   await storage.atomicWrite(path, await exportWorkbook(workbook, path));
   const source = await storage.sourceFor(path, format);
   const recentFiles = await storage.remember(path, format);
-  await storage.clearRecovery();
-  dirty = false;
-  mainWindow?.setTitle(`${basename(path)} — TXT Sheets`);
+  await storage.clearRecovery(state.recoveryKey);
+  state.dirty = false;
+  state.window.setTitle(`${basename(path)} — TXT Sheets`);
   return { status: 'saved', source, recentFiles };
 }
 
@@ -142,34 +163,39 @@ function validateCompatibilityReport(value: unknown): asserts value is Compatibi
 }
 
 function installIpcHandlers(): void {
-  ipcMain.handle('workbooks:open', async () => {
-    const path = await chooseOpenPath();
+  ipcMain.handle('workbooks:new', () => { createWindow(); });
+  ipcMain.handle('workbooks:open', async (event) => {
+    const path = await chooseOpenPath(fileWindow(event).window);
+    if (path) createWindow(undefined, await openPath(path));
+    return null;
+  });
+  ipcMain.handle('workbooks:open-external', async (event) => {
+    const state = fileWindow(event);
+    const result = state.initialResult;
+    state.initialResult = undefined;
+    if (result) return result;
+    const path = state.externalPath;
+    state.externalPath = undefined;
     return path ? openPath(path) : null;
   });
-  ipcMain.handle('workbooks:open-external', async () => {
-    const path = pendingExternalPaths.shift();
-    if (!path) return null;
-    try { return await openPath(path); }
-    catch (error) {
-      if (process.env.TXT_SHEETS_SMOKE_LOG) console.error(error);
-      throw error;
-    }
+  ipcMain.on('workbooks:cancel-external', (event) => {
+    fileWindow(event).externalPath = undefined;
   });
-  ipcMain.on('workbooks:cancel-external', () => { pendingExternalPaths.shift(); });
   ipcMain.handle('workbooks:open-recent', async (_event, id: unknown) => {
-    if (typeof id !== 'string') throw new Error('Invalid recent file.');
+    if (typeof id !== 'string') throw new Error('Invalid recent file identifier.');
     const path = storage.getPath(id);
     if (!path) throw new Error('This recent file is no longer available.');
-    return openPath(path);
+    createWindow(undefined, await openPath(path));
+    return null;
   });
-  ipcMain.handle('workbooks:save', async (_event, value: unknown) => {
+  ipcMain.handle('workbooks:save', async (event, value: unknown) => {
     validateWorkbook(value);
     const path = value.source ? storage.getPath(value.source.id) : null;
-    return path ? saveToPath(value, path) : saveToPathOrCancel(value);
+    return path ? saveToPath(value, path, fileWindow(event)) : saveToPathOrCancel(value, fileWindow(event));
   });
-  ipcMain.handle('workbooks:save-as', async (_event, value: unknown) => {
+  ipcMain.handle('workbooks:save-as', async (event, value: unknown) => {
     validateWorkbook(value);
-    return saveToPathOrCancel(value);
+    return saveToPathOrCancel(value, fileWindow(event));
   });
   ipcMain.handle('workbooks:report-compatibility', async (_event, value: unknown) => {
     validateCompatibilityReport(value);
@@ -182,35 +208,42 @@ function installIpcHandlers(): void {
     }));
   });
   ipcMain.handle('workbooks:recent', () => storage.getRecentFiles());
-  ipcMain.handle('workbooks:recovery', () => storage.getRecovery());
-  ipcMain.handle('workbooks:write-recovery', async (_event, value: unknown) => {
+  ipcMain.handle('workbooks:recovery', (event) => storage.getRecovery(fileWindow(event).recoveryKey));
+  ipcMain.handle('workbooks:write-recovery', async (event, value: unknown) => {
     validateWorkbook(value);
-    await storage.writeRecovery(value);
+    await storage.writeRecovery(value, fileWindow(event).recoveryKey);
   });
-  ipcMain.handle('workbooks:clear-recovery', () => storage.clearRecovery());
+  ipcMain.handle('workbooks:clear-recovery', (event) => storage.clearRecovery(fileWindow(event).recoveryKey));
   ipcMain.handle('updates:get-state', () => updateManager.getState());
   ipcMain.handle('updates:check', () => updateManager.checkForUpdates());
   ipcMain.handle('updates:download', () => updateManager.downloadUpdate());
   ipcMain.handle('updates:install', () => {
-    if (dirty) throw new Error('Save your workbook before restarting to install the update.');
-    forceClose = true;
-    updateManager.installUpdate();
+    if (anyDirty()) throw new Error('Save all open workbooks before restarting to install the update.');
+    for (const state of windows.values()) state.forceClose = true;
+    try { updateManager.installUpdate(); }
+    catch (error) {
+      for (const state of windows.values()) state.forceClose = false;
+      throw error;
+    }
   });
-  ipcMain.on('workbooks:dirty', (_event, value: unknown) => { dirty = value === true; });
-  ipcMain.on('workbooks:close-after-save', () => {
-    if (dirty) return;
-    forceClose = true;
-    mainWindow?.close();
+  ipcMain.on('workbooks:dirty', (event, value: unknown) => {
+    fileWindow(event).dirty = value === true;
+  });
+  ipcMain.on('workbooks:close-after-save', (event) => {
+    const state = fileWindow(event);
+    if (state.dirty) return;
+    state.forceClose = true;
+    state.window.close();
   });
 }
 
-async function saveToPathOrCancel(workbook: WorkbookDocument): Promise<SaveResult> {
-  const path = await chooseSavePath(workbook);
-  return path ? saveToPath(workbook, path) : { status: 'canceled', recentFiles: storage.getRecentFiles() };
+async function saveToPathOrCancel(workbook: WorkbookDocument, state: FileWindow): Promise<SaveResult> {
+  const path = await chooseSavePath(workbook, state.window);
+  return path ? saveToPath(workbook, path, state) : { status: 'canceled', recentFiles: storage.getRecentFiles() };
 }
 
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
+function createWindow(externalPath?: string, initialResult?: OpenResult, recoveryKey: string = randomUUID()): void {
+  const window = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 760,
@@ -225,38 +258,42 @@ function createWindow(): void {
       sandbox: true,
     },
   });
+  const state: FileWindow = { window, dirty: false, forceClose: false, closePromptOpen: false, recoveryKey, externalPath, initialResult };
+  const windowId = window.webContents.id;
+  windows.set(windowId, state);
+
   const developmentUrl = process.env.VITE_DEV_SERVER_URL;
-  if (developmentUrl) void mainWindow.loadURL(developmentUrl);
-  else void mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
-  mainWindow.on('close', (event) => {
-    if (!dirty || forceClose) return;
+  if (developmentUrl) void window.loadURL(developmentUrl);
+  else void window.loadFile(join(__dirname, '../renderer/index.html'));
+  window.on('close', (event) => {
+    if (!state.dirty || state.forceClose) return;
     event.preventDefault();
-    if (closePromptOpen) return;
-    closePromptOpen = true;
-    void dialog.showMessageBox(mainWindow!, {
+    if (state.closePromptOpen) return;
+    state.closePromptOpen = true;
+    void dialog.showMessageBox(window, {
       type: 'warning', title: 'Unsaved changes', message: 'Save changes before closing?',
       buttons: ['Save', 'Close without saving', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true,
     }).then(async ({ response }) => {
-      if (response === 0) sendCommand('save-and-close');
+      if (response === 0) window.webContents.send('app:command', 'save-and-close');
       else if (response === 1) {
-        await storage.clearRecovery();
-        forceClose = true;
-        mainWindow?.close();
+        await storage.clearRecovery(state.recoveryKey);
+        state.forceClose = true;
+        window?.close();
       }
-    }).finally(() => { closePromptOpen = false; });
+    }).finally(() => { state.closePromptOpen = false; });
   });
-  mainWindow.on('closed', () => { mainWindow = null; });
+  window.on('closed', () => { windows.delete(windowId); });
 }
 
 const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) app.quit();
 else {
   app.on('second-instance', (_event, commandLine) => {
-    queueExternalWorkbook(commandLine);
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-      mainWindow.webContents.send('workbooks:external-ready');
+    const path = findLaunchWorkbookPath(commandLine) ?? undefined;
+    if (windows.size) createWindow(path);
+    else {
+      // A launch can arrive while storage is still initializing.
+      pendingExternalPaths.push(path ?? '');
     }
   });
   void app.whenReady().then(async () => {
@@ -264,15 +301,19 @@ else {
     storage = new AppStorage(app.getPath('userData'));
     await storage.initialize();
     updateManager = new AppUpdateManager(app.getVersion(), app.isPackaged, (state) => {
-      mainWindow?.webContents.send('app:update-state', state);
+      for (const file of windows.values()) file.window.webContents.send('app:update-state', state);
     });
     updateManager.initialize();
     installIpcHandlers();
     createApplicationMenu();
-    createWindow();
-    mainWindow?.webContents.once('did-finish-load', () => {
-      if (pendingExternalPaths.length) mainWindow?.webContents.send('workbooks:external-ready');
-    });
+    const recoveryKeys = await storage.getRecoveryKeys();
+    for (const key of recoveryKeys) createWindow(undefined, undefined, key);
+    const launchPaths = pendingExternalPaths.splice(0);
+    if (launchPaths.length) {
+      for (const path of launchPaths) createWindow(path || undefined);
+    } else {
+      createWindow();
+    }
     if (app.isPackaged) {
       const firstCheck = setTimeout(() => void updateManager.checkForUpdates(), 4_000);
       firstCheck.unref();

@@ -4,6 +4,7 @@ import type { SpreadsheetApi } from '../shared/types';
 // API; this keeps the renderer independently previewable for visual QA.
 if (!window.spreadsheet) {
   const mock: SpreadsheetApi = {
+    newWindow: async () => { throw new Error('Multiple windows are available in the Windows app.'); },
     open: async () => null,
     openExternal: async () => null,
     cancelExternal: () => undefined,

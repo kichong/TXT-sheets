@@ -13,6 +13,7 @@ function parseUpdateState(value: unknown): AppUpdateState {
 }
 
 const api: SpreadsheetApi = {
+  newWindow: () => ipcRenderer.invoke('workbooks:new'),
   open: () => ipcRenderer.invoke('workbooks:open'),
   openExternal: () => ipcRenderer.invoke('workbooks:open-external'),
   cancelExternal: () => ipcRenderer.send('workbooks:cancel-external'),
