@@ -21,6 +21,8 @@ TXT Sheets follows the focused desktop design and release architecture of [TXT D
 - Open multiple files in separate windows; reopening a file focuses its existing window. New, Ctrl+N, and launching the app again create a blank window
 - Create, open, edit, and save `.xlsx`, `.csv`, and `.tsv` files
 - Multiple worksheets with add, rename, delete, drag-and-drop reordering, and keyboard-friendly navigation
+- Drag to select ranges of cells, rows, and columns, with automatic scrolling at the grid edges
+- Right-click selections for clipboard actions, insert/delete rows or columns, shift cells, and clear contents
 - Direct cell editing, a formula bar, copy/cut/paste, undo/redo, and find
 - Drag-resizable rows and columns with dimensions preserved in Excel workbooks
 - Row and column insertion/deletion

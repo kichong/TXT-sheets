@@ -8,6 +8,7 @@ import type { KeyboardEvent } from 'react';
 import { createBlankWorkbook } from '../shared/types';
 import type { AppCommand, AppUpdateState, CellStyle, RecentFile, WorkbookDocument } from '../shared/types';
 import { presentUpdate, type UpdateAction } from '../shared/updates';
+import { GridContextMenu, type GridMenuTarget, type GridMenuItem } from './GridContextMenu';
 import { SheetTabMenu, type SheetMenuTarget } from './SheetTabMenu';
 import { renameWorksheet, reorderWorksheet } from './sheet-actions';
 import { SpreadsheetGrid } from './SpreadsheetGrid';
@@ -16,7 +17,7 @@ import {
 } from './formulas';
 import {
   applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, setCellInput, selectedCells,
-  resizeColumn, resizeRow, selectionBounds, selectionLabel, uniqueSheetName,
+  resizeColumn, resizeRow, selectionBounds, selectionLabel, uniqueSheetName, cellShiftProblem, shiftSelectedCells,
 } from './workbook-model';
 import type { Selection } from './workbook-model';
 
@@ -61,6 +62,7 @@ export function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('txt-sheets-theme') === 'dark' ? 'dark' : 'light');
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [gridMenu, setGridMenu] = useState<GridMenuTarget | null>(null);
   const [sheetMenu, setSheetMenu] = useState<SheetMenuTarget | null>(null);
   const [sheetDrop, setSheetDrop] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
   const draggedSheetId = useRef<string | null>(null);
@@ -92,7 +94,7 @@ export function App() {
       const anchor = clamp(current.anchor);
       const focus = clamp(current.focus);
       return anchor.row === current.anchor.row && anchor.column === current.anchor.column &&
-        focus.row === current.focus.row && focus.column === current.focus.column ? current : { anchor, focus };
+        focus.row === current.focus.row && focus.column === current.focus.column ? current : { ...current, anchor, focus };
     });
   }, [activeSheet.rowCount, activeSheet.columnCount]);
 
@@ -326,8 +328,10 @@ export function App() {
   const clearSelection = useCallback(() => {
     commit((draft) => {
       const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
-      selectedCells(sheet, selection).forEach(({ row, column, cell }) => {
-        const key = cellKey(row, column);
+      const bounds = selectionBounds(selection);
+      Object.entries(sheet.cells).forEach(([key, cell]) => {
+        const [row, column] = key.split(':').map(Number);
+        if (row < bounds.top || row > bounds.bottom || column < bounds.left || column > bounds.right) return;
         if (cell?.style) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(cell.style) };
         else delete sheet.cells[key];
       });
@@ -344,15 +348,18 @@ export function App() {
       }
       rows.push(values.join('\t'));
     }
-    await navigator.clipboard.writeText(rows.join('\r\n'));
-    if (cut) clearSelection();
-  }, [activeSheet.cells, clearSelection, selection]);
+    try {
+      await navigator.clipboard.writeText(rows.join('\r\n'));
+      if (cut) clearSelection();
+    } catch (error) { handleError(error); }
+  }, [activeSheet.cells, clearSelection, handleError, selection]);
 
   const pasteSelection = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText();
       const rows = text.replace(/\r/gu, '').split('\n').map((row) => row.split('\t'));
-      const origin = selection.focus;
+      const bounds = selectionBounds(selection);
+      const origin = { row: bounds.top, column: bounds.left };
       commit((draft) => {
         const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
         rows.forEach((values, rowOffset) => values.forEach((value, columnOffset) => {
@@ -362,10 +369,59 @@ export function App() {
           setCellInput(sheet, row, column, value);
         }));
       });
-      const focus = { row: Math.min(activeSheet.rowCount - 1, origin.row + rows.length - 1), column: Math.min(activeSheet.columnCount - 1, origin.column + Math.max(0, ...rows.map((row) => row.length - 1))) };
+      const focus = { row: Math.min(activeSheet.rowCount - 1, origin.row + rows.length - 1), column: Math.min(activeSheet.columnCount - 1, origin.column + rows.reduce((maximum, row) => Math.max(maximum, row.length - 1), 0)) };
       setSelection({ anchor: origin, focus });
     } catch (error) { handleError(error); }
-  }, [activeSheet.columnCount, activeSheet.rowCount, commit, handleError, selection.focus]);
+  }, [activeSheet.columnCount, activeSheet.rowCount, commit, handleError, selection]);
+
+  const closeGridMenu = () => { setGridMenu(null); gridRef.current?.focus({ preventScroll: true }); };
+  const changeSelectedStructure = (axis: 'row' | 'column', delta: 1 | -1, after = false) => {
+    const bounds = selectionBounds(selection);
+    const first = axis === 'row' ? bounds.top : bounds.left;
+    const last = axis === 'row' ? bounds.bottom : bounds.right;
+    const size = axis === 'row' ? activeSheet.rowCount : activeSheet.columnCount;
+    const count = delta === -1 ? Math.min(last - first + 1, size - 1) : last - first + 1;
+    if (count === 0) return;
+    if (delta === 1 && size + count > (axis === 'row' ? 1_048_576 : 16_384)) { setMessage('There is no room to insert this selection at the worksheet limit.'); return; }
+    commit((draft) => {
+      const operation = axis === 'row' ? (delta === 1 ? insertRow : deleteRow) : (delta === 1 ? insertColumn : deleteColumn);
+      for (let n = 0; n < count; n++) operation(draft, draft.activeSheetId, after ? last + 1 : first);
+    });
+    const focus = { row: bounds.top, column: bounds.left };
+    setSelection({ anchor: focus, focus });
+  };
+  const shiftCells = (axis: 'row' | 'column', delta: 1 | -1) => {
+    const problem = cellShiftProblem(workbook, activeSheet.id, selection, axis, delta);
+    if (problem) { setMessage(problem); return; }
+    commit((draft) => shiftSelectedCells(draft, draft.activeSheetId, selection, axis, delta));
+  };
+  const gridMenuItems: Array<GridMenuItem | null> = gridMenu ? [
+    { label: 'Cut', shortcut: 'Ctrl+X', action: () => { void copySelection(true); } },
+    { label: 'Copy', shortcut: 'Ctrl+C', action: () => { void copySelection(); } },
+    { label: 'Paste', shortcut: 'Ctrl+V', action: () => { void pasteSelection(); } },
+    null,
+    ...(selection.kind !== 'columns' ? [
+      { label: 'Insert rows above', action: () => changeSelectedStructure('row', 1) },
+      { label: 'Insert rows below', action: () => changeSelectedStructure('row', 1, true) },
+      { label: 'Delete rows', disabled: activeSheet.rowCount <= 1, action: () => changeSelectedStructure('row', -1) },
+    ] : []),
+    ...(selection.kind !== 'rows' ? [
+      { label: 'Insert columns left', action: () => changeSelectedStructure('column', 1) },
+      { label: 'Insert columns right', action: () => changeSelectedStructure('column', 1, true) },
+      { label: 'Delete columns', disabled: activeSheet.columnCount <= 1, action: () => changeSelectedStructure('column', -1) },
+    ] : []),
+    ...(selection.kind !== 'rows' && selection.kind !== 'columns' ? [
+      null,
+      { label: 'Insert cells, shift down', action: () => shiftCells('row', 1) },
+      { label: 'Insert cells, shift right', action: () => shiftCells('column', 1) },
+      { label: 'Delete cells, shift up', action: () => shiftCells('row', -1) },
+      { label: 'Delete cells, shift left', action: () => shiftCells('column', -1) },
+    ] : []),
+    null,
+    { label: 'Clear contents', shortcut: 'Delete', action: clearSelection },
+    { label: 'Undo', shortcut: 'Ctrl+Z', disabled: history.past.length === 0, action: undo },
+    { label: 'Redo', shortcut: 'Ctrl+Y', disabled: history.future.length === 0, action: redo },
+  ] : [];
 
   const gridKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (editing) return;
@@ -435,9 +491,13 @@ export function App() {
   }, []);
 
   const selectionStats = useMemo(() => {
-    const values = selectedCells(activeSheet, selection)
-      .map(({ row, column }) => evaluator.evaluateCell(activeSheet.id, row, column))
-      .filter((value): value is number => typeof value === 'number');
+    const bounds = selectionBounds(selection);
+    const values = Object.keys(activeSheet.cells).flatMap((key) => {
+      const [row, column] = key.split(':').map(Number);
+      if (row < bounds.top || row > bounds.bottom || column < bounds.left || column > bounds.right) return [];
+      const value = evaluator.evaluateCell(activeSheet.id, row, column);
+      return typeof value === 'number' ? [value] : [];
+    });
     const sum = values.reduce((total, value) => total + value, 0);
     return { count: values.length, sum, average: values.length ? sum / values.length : 0 };
   }, [activeSheet, evaluator, selection]);
@@ -635,6 +695,7 @@ export function App() {
         </div>
       ) : null}
 
+      {gridMenu && <GridContextMenu target={gridMenu} items={gridMenuItems} onClose={closeGridMenu} />}
       <section className="workspace">
         <SpreadsheetGrid
           ref={gridRef}
@@ -647,7 +708,8 @@ export function App() {
           onCommitEdit={commitEdit}
           onCancelEdit={cancelEdit}
           onStartEdit={startEdit}
-          onSelectionChange={(next) => { setSelection(next); cancelEdit(); }}
+          onSelectionChange={(next) => { commitEdit(); setSelection(next); gridRef.current?.focus({ preventScroll: true }); }}
+          onContextMenu={(target) => { commitEdit(); setSelection(target.selection); setGridMenu(target); }}
           onFillSelection={fillSelectedCells}
           onPickFormulaReference={pickFormulaReference}
           referencePicking={editing && editValue.trimStart().startsWith('=')}

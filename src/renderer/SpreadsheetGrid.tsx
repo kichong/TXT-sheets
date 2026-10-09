@@ -1,6 +1,6 @@
 import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, PointerEvent, MouseEvent } from 'react';
 import type { CellData, SheetDocument } from '../shared/types';
 import type { FormulaEvaluator } from './formulas';
 import { addressForCell, cellKey, columnName, editableCellText, parseCellAddress } from './formulas';
@@ -39,6 +39,7 @@ interface SpreadsheetGridProps {
   referencePicking: boolean;
   onColumnResize(column: number, width: number): void;
   onRowResize(row: number, height: number): void;
+  onContextMenu(target: { x: number; y: number; selection: Selection }): void;
   onKeyDown(event: KeyboardEvent<HTMLDivElement>): void;
 }
 
@@ -98,12 +99,15 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
   const {
     sheet, evaluator, selection, editing, editValue, onEditValueChange, onCommitEdit, onCancelEdit,
     onStartEdit, onSelectionChange, onFillSelection, onPickFormulaReference, referencePicking,
-    onColumnResize, onRowResize, onKeyDown,
+    onColumnResize, onRowResize, onKeyDown, onContextMenu,
   } = props;
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const revealKeyboardSelection = useRef(false);
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
-  const dragging = useRef(false);
+  const dragging = useRef<{ anchor: Selection['anchor']; kind: NonNullable<Selection['kind']>; pointerId: number; x: number; y: number; last: string } | null>(null);
+  const dragFrame = useRef<number | null>(null);
+  const dragUpdate = useRef<() => void>(() => {});
+  const finishAction = useRef<() => void>(() => {});
   const fillSource = useRef<Selection | null>(null);
   const fillTarget = useRef<Selection | null>(null);
   const resizing = useRef<ResizeSession | null>(null);
@@ -164,33 +168,96 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     else if (forwardedRef) forwardedRef.current = node;
   };
 
-  const pointerDown = (event: PointerEvent, row: number, column: number) => {
+  const pointSelection = (kind: NonNullable<Selection['kind']>, anchor: Selection['anchor'], point: Selection['focus']): Selection => ({
+    kind,
+    anchor: { row: kind === 'columns' ? 0 : anchor.row, column: kind === 'rows' ? 0 : anchor.column },
+    focus: { row: kind === 'columns' ? sheet.rowCount - 1 : point.row, column: kind === 'rows' ? sheet.columnCount - 1 : point.column },
+  });
+
+  const pointerDown = (event: PointerEvent, row: number, column: number, kind: NonNullable<Selection['kind']> = 'cells') => {
     if (event.button !== 0) return;
-    if (referencePicking) {
+    if (referencePicking && kind === 'cells') {
       event.preventDefault();
       onPickFormulaReference(row, column);
       return;
     }
-    dragging.current = true;
-    const point = { row, column };
-    onSelectionChange({ anchor: event.shiftKey ? selection.anchor : point, focus: point });
+    event.preventDefault();
+    const anchor = event.shiftKey ? selection.anchor : { row, column };
+    dragging.current = { anchor, kind, pointerId: event.pointerId, x: event.clientX, y: event.clientY, last: '' };
+    scrollRef.current?.setPointerCapture(event.pointerId);
+    onSelectionChange(pointSelection(kind, anchor, { row, column }));
+    const tick = () => {
+      if (!dragging.current) { dragFrame.current = null; return; }
+      dragUpdate.current();
+      dragFrame.current = requestAnimationFrame(tick);
+    };
+    if (dragFrame.current === null) dragFrame.current = requestAnimationFrame(tick);
+  };
+
+  dragUpdate.current = () => {
+    const session = dragging.current;
+    const element = scrollRef.current;
+    if (!session || !element) return;
+    const rect = element.getBoundingClientRect();
+    const speed = (position: number, start: number, end: number) => position < start + 24 ? -Math.min(32, Math.max(2, (start + 24 - position) / 2)) : position > end - 24 ? Math.min(32, Math.max(2, (position - end + 24) / 2)) : 0;
+    if (session.kind !== 'rows') element.scrollLeft += speed(session.x, rect.left + ROW_HEADER_WIDTH, rect.left + element.clientWidth);
+    if (session.kind !== 'columns') element.scrollTop += speed(session.y, rect.top + COLUMN_HEADER_HEIGHT, rect.top + element.clientHeight);
+    const rowOffset = element.scrollTop + Math.max(0, Math.min(element.clientHeight - COLUMN_HEADER_HEIGHT - 1, session.y - rect.top - COLUMN_HEADER_HEIGHT));
+    const columnOffset = element.scrollLeft + Math.max(0, Math.min(element.clientWidth - ROW_HEADER_WIDTH - 1, session.x - rect.left - ROW_HEADER_WIDTH));
+    let row = rowVirtualizer.getVirtualItemForOffset(rowOffset)?.index ?? 0;
+    let column = columnVirtualizer.getVirtualItemForOffset(columnOffset)?.index ?? 0;
+    const merge = session.kind === 'cells' ? mergeMap.get(cellKey(row, column)) : undefined;
+    if (merge) { row = merge.masterRow; column = merge.masterColumn; }
+    const key = `${row}:${column}`;
+    if (session.last === key) return;
+    session.last = key;
+    onSelectionChange(pointSelection(session.kind, session.anchor, { row, column }));
+  };
+
+  const contextMenu = (event: MouseEvent, row: number, column: number, kind: NonNullable<Selection['kind']> = 'cells') => {
+    event.preventDefault();
+    event.stopPropagation();
+    const inside = row >= bounds.top && row <= bounds.bottom && column >= bounds.left && column <= bounds.right;
+    const keep = kind === 'cells' ? inside : selection.kind === kind && (kind === 'rows' ? row >= bounds.top && row <= bounds.bottom : column >= bounds.left && column <= bounds.right);
+    const next = keep ? selection : pointSelection(kind, { row, column }, { row, column });
+    onContextMenu({ x: event.clientX, y: event.clientY, selection: next });
   };
 
   const beginFill = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    dragging.current = false;
+    dragging.current = null;
     fillSource.current = structuredClone(selection);
     fillTarget.current = structuredClone(selection);
   };
 
   const finishPointerAction = () => {
-    dragging.current = false;
+    const pointer = dragging.current?.pointerId;
+    if (pointer !== undefined && scrollRef.current?.hasPointerCapture(pointer)) scrollRef.current.releasePointerCapture(pointer);
+    dragging.current = null;
+    if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+    dragFrame.current = null;
     if (fillSource.current && fillTarget.current) onFillSelection(fillSource.current, fillTarget.current);
     fillSource.current = null;
     fillTarget.current = null;
   };
+
+  finishAction.current = finishPointerAction;
+  useEffect(() => {
+    const finish = () => finishAction.current();
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    window.addEventListener('blur', finish);
+    return () => {
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      window.removeEventListener('blur', finish);
+      dragging.current = null;
+      if (dragFrame.current !== null) cancelAnimationFrame(dragFrame.current);
+      dragFrame.current = null;
+    };
+  }, [sheet.id]);
 
   const clampSize = (axis: ResizeSession['axis'], size: number) => Math.round(Math.min(
     axis === 'column' ? MAX_COLUMN_WIDTH : MAX_ROW_HEIGHT,
@@ -261,12 +328,28 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
       tabIndex={0}
       role="grid"
       aria-label={`${sheet.name} spreadsheet grid`}
-      onKeyDown={onKeyDown}
+      onDoubleClick={(event) => {
+        if (editing || (event.target as HTMLElement).closest('input, button, [role="separator"]')) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < rect.left + ROW_HEADER_WIDTH || event.clientY < rect.top + COLUMN_HEADER_HEIGHT) return;
+        onStartEdit(editableCellText(sheet.cells[cellKey(selection.focus.row, selection.focus.column)]));
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          onContextMenu({ x: rect.left + ROW_HEADER_WIDTH + 12, y: rect.top + COLUMN_HEADER_HEIGHT + 12, selection });
+        } else onKeyDown(event);
+      }}
       onKeyDownCapture={(event) => {
         revealKeyboardSelection.current = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'Tab'].includes(event.key)
           && (event.target === event.currentTarget || (event.target as HTMLElement).classList.contains('cell-editor'));
       }}
       onPointerDownCapture={() => { revealKeyboardSelection.current = false; }}
+      onPointerMove={(event) => {
+        const session = dragging.current;
+        if (session && session.pointerId === event.pointerId) { session.x = event.clientX; session.y = event.clientY; dragUpdate.current(); }
+      }}
       onPointerUp={finishPointerAction}
       onPointerCancel={finishPointerAction}
       onScroll={(event) => setScroll({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })}
@@ -277,13 +360,15 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
             role="columnheader"
             aria-label={`Column ${columnName(column.index)}`}
             className={`column-header ${column.index >= bounds.left && column.index <= bounds.right ? 'is-selected' : ''}`}
+            onContextMenu={(event) => contextMenu(event, 0, column.index, 'columns')}
             key={`column-${column.key}`}
             style={{ width: column.size, transform: `translate(${ROW_HEADER_WIDTH + column.start}px, ${scroll.top}px)` }}
           >
             <button
               type="button"
               className="header-select-button"
-              onClick={(event) => onSelectionChange({ anchor: { row: event.shiftKey ? selection.anchor.row : 0, column: event.shiftKey ? selection.anchor.column : column.index }, focus: { row: sheet.rowCount - 1, column: column.index } })}
+              onPointerDown={(event) => pointerDown(event, 0, column.index, 'columns')}
+              onClick={(event) => { if (event.detail === 0) onSelectionChange(pointSelection('columns', event.shiftKey ? selection.anchor : { row: 0, column: column.index }, { row: 0, column: column.index })); }}
             >{columnName(column.index)}</button>
             <span
               className="column-resize-handle"
@@ -308,13 +393,15 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
             role="rowheader"
             aria-label={`Row ${row.index + 1}`}
             className={`row-header ${row.index >= bounds.top && row.index <= bounds.bottom ? 'is-selected' : ''}`}
+            onContextMenu={(event) => contextMenu(event, row.index, 0, 'rows')}
             key={`row-${row.key}`}
             style={{ height: row.size, transform: `translate(${scroll.left}px, ${COLUMN_HEADER_HEIGHT + row.start}px)` }}
           >
             <button
               type="button"
               className="header-select-button"
-              onClick={(event) => onSelectionChange({ anchor: { row: event.shiftKey ? selection.anchor.row : row.index, column: event.shiftKey ? selection.anchor.column : 0 }, focus: { row: row.index, column: sheet.columnCount - 1 } })}
+              onPointerDown={(event) => pointerDown(event, row.index, 0, 'rows')}
+              onClick={(event) => { if (event.detail === 0) onSelectionChange(pointSelection('rows', event.shiftKey ? selection.anchor : { row: row.index, column: 0 }, { row: row.index, column: 0 })); }}
             >{row.index + 1}</button>
             <span
               className="row-resize-handle"
@@ -362,6 +449,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
                 ...styleForCell(cell),
               }}
               onPointerDown={(event) => pointerDown(event, row.index, column.index)}
+              onContextMenu={(event) => contextMenu(event, row.index, column.index)}
               onPointerEnter={() => {
                 if (fillSource.current) {
                   const sourceBounds = selectionBounds(fillSource.current);
@@ -371,11 +459,8 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
                   };
                   fillTarget.current = target;
                   onSelectionChange(target);
-                } else if (dragging.current) {
-                  onSelectionChange({ anchor: selection.anchor, focus: { row: row.index, column: column.index } });
                 }
               }}
-              onDoubleClick={() => onStartEdit(editableCellText(cell))}
             >
               <span>{displayValue(cell, evaluator.evaluateCell(sheet.id, row.index, column.index))}</span>
               {row.index === bounds.bottom && column.index === bounds.right && !editing ? (

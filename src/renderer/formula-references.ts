@@ -143,3 +143,35 @@ export function shiftCopiedReferences(formula: string, rowDelta: number, columnD
     return changed ? '' : null;
   });
 }
+
+export interface CellShift { top: number; bottom: number; left: number; right: number; axis: SheetAxis; delta: 1 | -1 }
+
+/** Partial cell shifts only affect references in the selected row/column band. */
+export function rewriteCellShiftReferences(formula: string, ownerSheet: string, editedSheet: string, change: CellShift): string {
+  const { axis, delta } = change;
+  const other = axis === 'row' ? 'column' : 'row';
+  const low = other === 'row' ? change.top : change.left;
+  const high = other === 'row' ? change.bottom : change.right;
+  const index = axis === 'row' ? change.top : change.left;
+  const count = axis === 'row' ? change.bottom - change.top + 1 : change.right - change.left + 1;
+  return mapReferences(formula, (first, last, qualifier) => {
+    if ((qualifier ?? ownerSheet).toLocaleLowerCase() !== editedSheet.toLocaleLowerCase() || first[axis] === undefined) return null;
+    const end = last ?? first;
+    if (Math.max(first[axis]!, end[axis]!) < index) return null;
+    const firstOther = first[other] ?? 0;
+    const lastOther = end[other] ?? (other === 'row' ? 1_048_575 : 16_383);
+    if (Math.max(firstOther, lastOther) < low || Math.min(firstOther, lastOther) > high) return null;
+    // A partial band cannot represent a split reference as a single rectangle.
+    // Reject before editing rather than silently changing which cells it refers to.
+    if (Math.min(firstOther, lastOther) < low || Math.max(firstOther, lastOther) > high) {
+      throw new Error('This would split a formula range. Insert or delete whole rows or columns instead.');
+    }
+    let coordinates: [number, number] | null = [first[axis]!, end[axis]!];
+    for (let n = 0; n < count && coordinates; n++) coordinates = shiftReferenceInterval(coordinates[0], coordinates[1], index, delta);
+    if (!coordinates) return '#REF!';
+    first[axis] = coordinates[0];
+    if (last) last[axis] = coordinates[1];
+    if ((first.row ?? 0) > 1_048_575 || (last?.row ?? 0) > 1_048_575 || (first.column ?? 0) > 16_383 || (last?.column ?? 0) > 16_383) return '#REF!';
+    return '';
+  });
+}

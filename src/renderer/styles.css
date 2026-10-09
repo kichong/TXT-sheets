@@ -495,3 +495,9 @@ select:focus-visible,
 .sheet-rename-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .sheet-rename-actions button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--chrome-muted); cursor: pointer; }
 .sheet-rename-actions button[type="submit"] { background: var(--accent-soft); color: var(--accent-strong); }
+
+.grid-context-menu { min-width: 230px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.grid-context-menu button { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.grid-context-menu small { color: var(--text-muted); font-size: 10px; }
+.header-select-button { user-select: none; touch-action: none; }
+.grid-cell { touch-action: none; }

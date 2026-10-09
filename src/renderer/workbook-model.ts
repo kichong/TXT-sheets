@@ -1,9 +1,9 @@
 import type { CellData, CellStyle, SheetDocument, WorkbookDocument } from '../shared/types';
 import { cellKey, columnName, normalizeCellInput, parseCellAddress } from './formulas';
-import { rewriteStructuralReferences, shiftCopiedReferences, shiftReferenceInterval, type SheetAxis } from './formula-references';
+import { rewriteCellShiftReferences, rewriteStructuralReferences, shiftCopiedReferences, shiftReferenceInterval, type SheetAxis } from './formula-references';
 
 export interface CellPoint { row: number; column: number; }
-export interface Selection { anchor: CellPoint; focus: CellPoint; }
+export interface Selection { anchor: CellPoint; focus: CellPoint; kind?: 'cells' | 'rows' | 'columns'; }
 
 export const MIN_COLUMN_WIDTH = 40;
 export const MAX_COLUMN_WIDTH = 640;
@@ -165,7 +165,8 @@ function changeStructure(workbook: WorkbookDocument, sheetId: string, axis: Shee
   const sheet = workbook.sheets.find((item) => item.id === sheetId);
   if (!sheet) return false;
   const count = axis === 'row' ? 'rowCount' : 'columnCount';
-  if (!Number.isInteger(index) || index < 0 || index >= sheet[count] || (delta === -1 && sheet[count] <= 1)) return false;
+  if (delta === 1 && sheet[count] >= (axis === 'row' ? 1_048_576 : 16_384)) return false;
+  if (!Number.isInteger(index) || index < 0 || index > sheet[count] || (delta === -1 && index === sheet[count]) || (delta === -1 && sheet[count] <= 1)) return false;
   shiftCells(sheet, axis, index, delta);
   sheet[count] += delta;
   for (const owner of workbook.sheets) {
@@ -202,4 +203,62 @@ export function uniqueSheetName(workbook: WorkbookDocument, preferred = 'Sheet')
   let index = 1;
   while (names.has(`${preferred}${index}`.toLocaleLowerCase())) index += 1;
   return `${preferred}${index}`;
+}
+
+export function cellShiftProblem(workbook: WorkbookDocument, sheetId: string, selection: Selection, axis: SheetAxis, delta: 1 | -1): string | null {
+  const sheet = workbook.sheets.find((item) => item.id === sheetId)!;
+  const bounds = selectionBounds(selection);
+  if (delta === 1) {
+    const amount = axis === 'row' ? bounds.bottom - bounds.top + 1 : bounds.right - bounds.left + 1;
+    const limit = axis === 'row' ? 1_048_576 : 16_384;
+    for (const key of Object.keys(sheet.cells)) {
+      const [row, column] = key.split(':').map(Number);
+      const affected = axis === 'row' ? column >= bounds.left && column <= bounds.right && row >= bounds.top : row >= bounds.top && row <= bounds.bottom && column >= bounds.left;
+      if (affected && (axis === 'row' ? row : column) + amount >= limit) return 'There is no room to shift these cells at the edge of the worksheet.';
+    }
+  }
+  for (const range of sheet.merges) {
+    const [start, end] = range.split(':').map(parseCellAddress);
+    if (!start || !end) continue;
+    const affected = axis === 'row' ? end.row >= bounds.top && end.column >= bounds.left && start.column <= bounds.right
+      : end.column >= bounds.left && end.row >= bounds.top && start.row <= bounds.bottom;
+    if (affected) return 'Unmerge cells in the affected rows or columns before shifting cells.';
+  }
+  try {
+    for (const owner of workbook.sheets) for (const cell of Object.values(owner.cells)) {
+      if (cell.formula) rewriteCellShiftReferences(cell.formula, owner.name, sheet.name, { ...bounds, axis, delta });
+    }
+  } catch (error) { return (error as Error).message; }
+  return null;
+}
+
+export function shiftSelectedCells(workbook: WorkbookDocument, sheetId: string, selection: Selection, axis: SheetAxis, delta: 1 | -1): void {
+  const problem = cellShiftProblem(workbook, sheetId, selection, axis, delta);
+  if (problem) throw new Error(problem);
+  const sheet = workbook.sheets.find((item) => item.id === sheetId)!;
+  const bounds = selectionBounds(selection);
+  const count = axis === 'row' ? bounds.bottom - bounds.top + 1 : bounds.right - bounds.left + 1;
+  const index = axis === 'row' ? bounds.top : bounds.left;
+  const next: Record<string, CellData> = {};
+  for (const [key, cell] of Object.entries(sheet.cells)) {
+    let [row, column] = key.split(':').map(Number);
+    const inBand = axis === 'row' ? column >= bounds.left && column <= bounds.right : row >= bounds.top && row <= bounds.bottom;
+    const coordinate = axis === 'row' ? row : column;
+    if (inBand && coordinate >= index) {
+      if (delta === -1 && coordinate < index + count) continue;
+      if (axis === 'row') row += count * delta;
+      else column += count * delta;
+      if (delta === 1) {
+        sheet.rowCount = Math.max(sheet.rowCount, row + 1);
+        sheet.columnCount = Math.max(sheet.columnCount, column + 1);
+      }
+    }
+    next[cellKey(row, column)] = cell;
+  }
+  sheet.cells = next;
+  for (const owner of workbook.sheets) for (const cell of Object.values(owner.cells)) {
+    if (!cell.formula) continue;
+    const nextFormula = rewriteCellShiftReferences(cell.formula, owner.name, sheet.name, { ...bounds, axis, delta });
+    if (nextFormula !== cell.formula) { cell.formula = nextFormula; delete cell.cachedValue; }
+  }
 }
