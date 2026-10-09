@@ -8,6 +8,8 @@ interface StorageState { recent: StoredRecent[]; }
 
 export class AppStorage {
   private recentWrites: Promise<unknown> = Promise.resolve();
+  private readonly recoveryWrites = new Map<string, Promise<unknown>>();
+  private readonly sources = new Map<string, string>();
   private readonly statePath: string;
   private readonly recoveryPath: string;
   private state: StorageState = { recent: [] };
@@ -34,8 +36,14 @@ export class AppStorage {
   async initialize(): Promise<void> {
     await mkdir(dirname(this.statePath), { recursive: true });
     try {
-      this.state = JSON.parse(await readFile(this.statePath, 'utf8')) as StorageState;
+      const parsed = JSON.parse(await readFile(this.statePath, 'utf8')) as Partial<StorageState> | null;
+      this.state = { recent: Array.isArray(parsed?.recent) ? parsed.recent.filter((entry) =>
+        entry && typeof entry.id === 'string' && typeof entry.path === 'string' &&
+        typeof entry.displayName === 'string' && typeof entry.lastOpenedAt === 'string' &&
+        ['xlsx', 'csv', 'tsv'].includes(entry.format),
+      ).slice(0, 10) : [] };
     } catch { this.state = { recent: [] }; }
+    for (const entry of this.state.recent) this.sources.set(entry.id, entry.path);
   }
 
   private async persist(): Promise<void> {
@@ -45,6 +53,7 @@ export class AppStorage {
   async sourceFor(path: string, format: WorkbookFormat): Promise<WorkbookSource> {
     const existing = this.state.recent.find((entry) => entry.path.toLocaleLowerCase() === path.toLocaleLowerCase());
     const id = existing?.id ?? createHash('sha256').update(path.toLocaleLowerCase()).digest('hex').slice(0, 24);
+    this.sources.set(id, path);
     return { id, displayName: basename(path), format };
   }
 
@@ -67,11 +76,22 @@ export class AppStorage {
   }
 
   getPath(id: string): string | null {
-    return this.state.recent.find((entry) => entry.id === id)?.path ?? null;
+    return this.sources.get(id) ?? null;
   }
 
-  async writeRecovery(workbook: WorkbookDocument, key?: string): Promise<void> {
-    await this.atomicWrite(this.recoveryFile(key), Buffer.from(JSON.stringify(workbook), 'utf8'));
+  private queueRecovery(path: string, action: () => Promise<void>): Promise<void> {
+    const operation = (this.recoveryWrites.get(path) ?? Promise.resolve()).catch(() => undefined).then(action);
+    this.recoveryWrites.set(path, operation);
+    void operation.finally(() => {
+      if (this.recoveryWrites.get(path) === operation) this.recoveryWrites.delete(path);
+    }).catch(() => undefined);
+    return operation;
+  }
+
+  writeRecovery(workbook: WorkbookDocument, key?: string): Promise<void> {
+    const path = this.recoveryFile(key);
+    const bytes = Buffer.from(JSON.stringify(workbook), 'utf8');
+    return this.queueRecovery(path, () => this.atomicWrite(path, bytes));
   }
 
   async getRecovery(key?: string): Promise<WorkbookDocument | null> {
@@ -79,14 +99,22 @@ export class AppStorage {
     catch { return null; }
   }
 
-  async clearRecovery(key?: string): Promise<void> {
-    try { await unlink(this.recoveryFile(key)); } catch { /* no recovery is a valid state */ }
+  clearRecovery(key?: string): Promise<void> {
+    const path = this.recoveryFile(key);
+    return this.queueRecovery(path, () => unlink(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    }));
   }
 
   async atomicWrite(path: string, bytes: Uint8Array): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temporary, bytes);
-    await rename(temporary, path);
+    try {
+      await writeFile(temporary, bytes);
+      await rename(temporary, path);
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
   }
 }

@@ -1,5 +1,6 @@
 import type { CellData, CellStyle, SheetDocument, WorkbookDocument } from '../shared/types';
-import { cellKey, columnName, parseCellAddress } from './formulas';
+import { cellKey, columnName, normalizeCellInput, parseCellAddress } from './formulas';
+import { rewriteStructuralReferences, shiftCopiedReferences, shiftReferenceInterval, type SheetAxis } from './formula-references';
 
 export interface CellPoint { row: number; column: number; }
 export interface Selection { anchor: CellPoint; focus: CellPoint; }
@@ -75,24 +76,15 @@ export function nearestCellTemplate(sheet: SheetDocument, row: number, column: n
   return undefined;
 }
 
-function shiftFormulaReferences(formula: string, rowDelta: number, columnDelta: number): string {
-  return formula.replace(/(^|[^A-Z0-9_.])([$]?)([A-Z]+)([$]?)(\d+)(?!\d|\s*\()/giu, (match, prefix: string, absoluteColumn: string, columnName: string, absoluteRow: string, rowText: string) => {
-    const sourceColumn = columnName.toUpperCase().split('').reduce((total, character) => total * 26 + character.charCodeAt(0) - 64, 0) - 1;
-    const targetColumn = absoluteColumn ? sourceColumn : Math.max(0, sourceColumn + columnDelta);
-    const targetRow = absoluteRow ? Number(rowText) - 1 : Math.max(0, Number(rowText) - 1 + rowDelta);
-    return `${prefix}${absoluteColumn}${columnNameForIndex(targetColumn)}${absoluteRow}${targetRow + 1}`;
-  });
-}
-
-function columnNameForIndex(index: number): string {
-  let value = index + 1;
-  let name = '';
-  while (value > 0) {
-    const remainder = (value - 1) % 26;
-    name = String.fromCharCode(65 + remainder) + name;
-    value = Math.floor((value - 1) / 26);
-  }
-  return name;
+export function setCellInput(sheet: SheetDocument, row: number, column: number, input: string): void {
+  const key = cellKey(row, column);
+  const existing = sheet.cells[key];
+  const template = existing?.style ? existing : nearestCellTemplate(sheet, row, column) ?? existing;
+  const normalized = normalizeCellInput(input, template);
+  const inheritedStyle = existing?.style ?? template?.style;
+  if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
+  else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
+  else delete sheet.cells[key];
 }
 
 function modulo(value: number, divisor: number): number {
@@ -122,13 +114,17 @@ export function fillSelection(sheet: SheetDocument, source: Selection, target: S
         continue;
       }
       const next = structuredClone(sourceCell);
-      if (next.formula) next.formula = shiftFormulaReferences(next.formula, row - sourceRow, column - sourceColumn);
+      if (next.formula) {
+        const copied = shiftCopiedReferences(next.formula, row - sourceRow, column - sourceColumn);
+        if (copied !== next.formula) delete next.cachedValue;
+        next.formula = copied;
+      }
       sheet.cells[targetKey] = next;
     }
   }
 }
 
-function shiftCells(sheet: SheetDocument, axis: 'row' | 'column', index: number, delta: 1 | -1): void {
+function shiftCells(sheet: SheetDocument, axis: SheetAxis, index: number, delta: 1 | -1): void {
   const next: Record<string, CellData> = {};
   for (const [key, cell] of Object.entries(sheet.cells)) {
     let [row, column] = key.split(':').map(Number);
@@ -151,35 +147,54 @@ function shiftCells(sheet: SheetDocument, axis: 'row' | 'column', index: number,
   }
   if (axis === 'row') sheet.rowHeights = shifted;
   else sheet.columnWidths = shifted;
-  sheet.merges = sheet.merges.filter((range) => {
+  sheet.merges = sheet.merges.flatMap((range) => {
     const [start, end] = range.split(':').map(parseCellAddress);
-    if (!start || !end) return false;
-    const startCoordinate = axis === 'row' ? start.row : start.column;
-    const endCoordinate = axis === 'row' ? end.row : end.column;
-    return index < startCoordinate || index > endCoordinate;
+    if (!start || !end) return [];
+    const coordinates = shiftReferenceInterval(start[axis], end[axis], index, delta);
+    if (!coordinates) return [];
+    start[axis] = coordinates[0];
+    end[axis] = coordinates[1];
+    if (start.row === end.row && start.column === end.column) return [];
+    return [`${columnName(start.column)}${start.row + 1}:${columnName(end.column)}${end.row + 1}`];
   });
+  const frozen = axis === 'row' ? 'frozenRows' : 'frozenColumns';
+  if (sheet[frozen] && index < sheet[frozen]!) sheet[frozen] = Math.max(0, sheet[frozen]! + delta);
 }
 
-export function insertRow(sheet: SheetDocument, index: number): void {
-  shiftCells(sheet, 'row', index, 1);
-  sheet.rowCount += 1;
+function changeStructure(workbook: WorkbookDocument, sheetId: string, axis: SheetAxis, index: number, delta: 1 | -1): boolean {
+  const sheet = workbook.sheets.find((item) => item.id === sheetId);
+  if (!sheet) return false;
+  const count = axis === 'row' ? 'rowCount' : 'columnCount';
+  if (!Number.isInteger(index) || index < 0 || index >= sheet[count] || (delta === -1 && sheet[count] <= 1)) return false;
+  shiftCells(sheet, axis, index, delta);
+  sheet[count] += delta;
+  for (const owner of workbook.sheets) {
+    for (const cell of Object.values(owner.cells)) {
+      if (!cell.formula) continue;
+      const next = rewriteStructuralReferences(cell.formula, owner.name, sheet.name, axis, index, delta);
+      if (next !== cell.formula) {
+        cell.formula = next;
+        delete cell.cachedValue;
+      }
+    }
+  }
+  return true;
 }
 
-export function deleteRow(sheet: SheetDocument, index: number): void {
-  if (sheet.rowCount <= 1) return;
-  shiftCells(sheet, 'row', index, -1);
-  sheet.rowCount -= 1;
+export function insertRow(workbook: WorkbookDocument, sheetId: string, index: number): boolean {
+  return changeStructure(workbook, sheetId, 'row', index, 1);
 }
 
-export function insertColumn(sheet: SheetDocument, index: number): void {
-  shiftCells(sheet, 'column', index, 1);
-  sheet.columnCount += 1;
+export function deleteRow(workbook: WorkbookDocument, sheetId: string, index: number): boolean {
+  return changeStructure(workbook, sheetId, 'row', index, -1);
 }
 
-export function deleteColumn(sheet: SheetDocument, index: number): void {
-  if (sheet.columnCount <= 1) return;
-  shiftCells(sheet, 'column', index, -1);
-  sheet.columnCount -= 1;
+export function insertColumn(workbook: WorkbookDocument, sheetId: string, index: number): boolean {
+  return changeStructure(workbook, sheetId, 'column', index, 1);
+}
+
+export function deleteColumn(workbook: WorkbookDocument, sheetId: string, index: number): boolean {
+  return changeStructure(workbook, sheetId, 'column', index, -1);
 }
 
 export function uniqueSheetName(workbook: WorkbookDocument, preferred = 'Sheet'): string {

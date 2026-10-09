@@ -102,7 +102,9 @@ try {
   assert.ok((await content(first)).includes('first unsaved'));
   const recent = await first.evaluate((api) => window[api].getRecentFiles(), api);
   await first.evaluate(({ api, id }) => window[api].openRecent(id), { api, id: recent.find((file) => file.displayName === (docs ? 'opened.txt' : 'opened.csv')).id });
-  await waitWindows(3);
+  await waitWindows(2);
+  await first.evaluate(({ api, docs }) => docs ? window[api].openDocument() : window[api].open(), { api, docs });
+  await waitWindows(2);
 
   await first.bringToFront();
   if (docs) await application.evaluate(({ Menu, BrowserWindow }, id) => {
@@ -110,16 +112,16 @@ try {
     Menu.getApplicationMenu().items[0].submenu.items[0].click();
   }, firstId);
   else await first.keyboard.press('Control+n');
-  await waitWindows(4);
+  await waitWindows(3);
   const environment = { ...process.env };
   delete environment.ELECTRON_RUN_AS_NODE;
   const relaunch = spawn(executablePath, [...baseArgs, `--user-data-dir=${profile}`], { cwd: root, env: environment, windowsHide: true, stdio: 'ignore' });
-  await waitWindows(5);
+  await waitWindows(4);
   await new Promise((done, reject) => { if (relaunch.exitCode !== null) return done(); relaunch.once('exit', done); relaunch.once('error', reject); });
   const external = spawn(executablePath, [...baseArgs, `--user-data-dir=${profile}`, openedPath], { cwd: root, env: environment, windowsHide: true, stdio: 'ignore' });
-  const pages = await waitWindows(6);
+  const pages = await waitWindows(4);
   await pages.at(-1).waitForTimeout(300);
-  assert.ok((await content(pages.at(-1))).includes('opened'));
+  assert.ok((await content(opened)).includes('opened'));
   assert.ok((await content(first)).includes('first unsaved'));
   await new Promise((done, reject) => { if (external.exitCode !== null) return done(); external.once('exit', done); external.once('error', reject); });
   await application.evaluate(({ app }) => { setImmediate(() => app.exit(0)); });

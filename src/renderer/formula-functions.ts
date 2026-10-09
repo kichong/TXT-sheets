@@ -25,11 +25,11 @@ export const FORMULA_FUNCTIONS: Readonly<Record<string, FormulaFunction>> = Obje
   },
   MIN: (values) => {
     const numbers = numericValues(values);
-    return numbers.length ? Math.min(...numbers) : 0;
+    return numbers.length ? numbers.reduce((minimum, value) => Math.min(minimum, value), Infinity) : 0;
   },
   MAX: (values) => {
     const numbers = numericValues(values);
-    return numbers.length ? Math.max(...numbers) : 0;
+    return numbers.length ? numbers.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : 0;
   },
   COUNT: (values) => numericValues(values).length,
 });

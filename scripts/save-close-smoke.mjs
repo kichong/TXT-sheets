@@ -104,9 +104,102 @@ try {
 
 run = await launch(existing);
 try {
+  await run.page.waitForFunction(() => document.body.textContent.includes('original') || document.body.textContent.includes('saved edit'));
+  await edit(run.page, 'before delayed save');
+  if (!docs) await run.page.keyboard.press('Enter');
+  await run.application.evaluate(({ ipcMain }, channel) => {
+    const original = ipcMain._invokeHandlers.get(channel);
+    globalThis.saveCalls = 0;
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, async (...args) => {
+      globalThis.saveCalls++;
+      await new Promise((resolve) => { globalThis.releaseSave = resolve; });
+      return original(...args);
+    });
+  }, docs ? 'documents:save' : 'workbooks:save');
+  await run.application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].webContents.send('app:command', 'save-and-close');
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await run.application.evaluate(() => typeof globalThis.releaseSave === 'function')) break;
+    await run.page.waitForTimeout(50);
+  }
+  assert.equal(await run.application.evaluate(() => typeof globalThis.releaseSave), 'function');
+  await run.application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].webContents.send('app:command', 'save');
+  });
+  await edit(run.page, 'latest edit during save');
+  await run.application.evaluate(() => globalThis.releaseSave());
+  await run.page.getByText('Saved the earlier changes. Your latest edits still need saving.', { exact: true }).waitFor();
+  assert.equal(run.page.isClosed(), false, 'Newer edits must keep Save and Close open');
+  assert.equal(await run.application.evaluate(() => globalThis.saveCalls), 1, 'Repeated saves must not overlap');
+  assert.match(await readFile(existing, 'utf8'), /before delayed save/);
+  assert.doesNotMatch(await readFile(existing, 'utf8'), /latest edit during save/);
+  if (docs) assert.match(await run.page.locator('.tiptap').innerText(), /latest edit during save/);
+  else {
+    const input = run.page.getByRole('textbox', { name: 'Edit A1', exact: true });
+    // Restoring grid focus can commit the unfinished edit; either state must keep its value.
+    const value = await input.count() ? await input.inputValue() : await run.page.getByRole('gridcell', { name: 'A1', exact: true }).innerText();
+    assert.match(value, /latest edit during save/);
+  }
+  const recovery = await run.page.evaluate((docs) => docs ? window.documentsApi.readRecovery() : window.spreadsheet.getRecovery(), docs);
+  assert.match(JSON.stringify(recovery), /latest edit during save/);
+  await run.application.evaluate(({ ipcMain }, channel) => {
+    // The next save can run without a delay.
+    const delayed = ipcMain._invokeHandlers.get(channel);
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, (...args) => {
+      const operation = delayed(...args);
+      globalThis.releaseSave();
+      return operation;
+    });
+  }, docs ? 'documents:save' : 'workbooks:save');
+  await close(run.application, 0);
+  await stopped(run.application);
+  assert.match(await readFile(existing, 'utf8'), /latest edit during save/);
+} finally { await stop(run.application); }
+
+run = await launch(existing);
+try {
   await edit(run.page, 'discarded edit');
   await close(run.application, 1);
   await stopped(run.application);
   assert.doesNotMatch(await readFile(existing, 'utf8'), /discarded edit/);
 } finally { await stop(run.application); }
-console.log(`PASS ${docs ? 'Docs' : 'Sheets'}: Save, Cancel, cancelled Save As, failed save, successful Save As, and close without saving.`);
+if (docs) {
+  run = await launch();
+  try {
+    await run.page.locator('.tiptap').click();
+    await run.page.keyboard.type('Al');
+    await run.page.keyboard.press('Control+b');
+    await run.page.keyboard.type('pha');
+    await run.page.keyboard.press('Control+b');
+    assert.equal(await run.page.locator('.tiptap strong').innerText(), 'pha');
+    await run.page.keyboard.press('Control+f');
+    await run.page.getByRole('textbox', { name: 'Find in document', exact: true }).fill('alpha');
+    await run.page.getByText('1 of 1', { exact: true }).waitFor();
+    assert.equal((await run.page.locator('.document-search-match.is-current').allTextContents()).join(''), 'Alpha');
+    await run.page.keyboard.press('Escape');
+  } finally { await stop(run.application); }
+} else {
+  run = await launch(existing);
+  try {
+    await run.page.waitForFunction(() => document.body.textContent.includes('latest edit during save'));
+    const original = await readFile(existing, 'utf8');
+    await edit(run.page, 'saved copy edit');
+    await run.page.keyboard.press('Enter');
+    const copy = resolve(directory, 'undo-copy.csv');
+    await run.application.evaluate(({ dialog, BrowserWindow }, path) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: path });
+      BrowserWindow.getAllWindows()[0].webContents.send('app:command', 'save-as');
+    }, copy);
+    await run.page.getByText('Saved as undo-copy.csv', { exact: true }).waitFor();
+    await run.page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await run.page.getByRole('button', { name: 'Save', exact: true }).click();
+    await run.page.getByText('Saved undo-copy.csv', { exact: true }).waitFor();
+    assert.equal(await readFile(existing, 'utf8'), original, 'Undo after Save As must not switch back to the original file');
+    assert.match(await readFile(copy, 'utf8'), /latest edit during save/);
+    assert.doesNotMatch(await readFile(copy, 'utf8'), /saved copy edit/);
+  } finally { await stop(run.application); }
+}
+console.log(`PASS ${docs ? 'Docs' : 'Sheets'}: save/close, cancelled/failed saves, newer edits during save, overlapping-save guard, recovery, and discard.`);

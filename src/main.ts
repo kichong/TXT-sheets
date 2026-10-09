@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import { AppStorage } from './main/storage';
 import { findLaunchWorkbookPath } from './main/launch-files';
 import { AppUpdateManager } from './main/updater';
@@ -17,6 +17,7 @@ interface FileWindow {
   recoveryKey: string;
   externalPath?: string;
   initialResult?: OpenResult;
+  documentPath?: string;
 }
 const windows = new Map<number, FileWindow>();
 let storage: AppStorage;
@@ -137,11 +138,15 @@ async function chooseSavePath(workbook: WorkbookDocument, owner: BrowserWindow):
 
 async function saveToPath(workbook: WorkbookDocument, path: string, state: FileWindow): Promise<SaveResult> {
   const format = formatForPath(path);
+  if ([...windows.values()].some((other) => other !== state && other.documentPath === resolve(path).toLowerCase())) {
+    throw new Error('This workbook is already open in another window. Save to a different file or switch to that window.');
+  }
   await storage.atomicWrite(path, await exportWorkbook(workbook, path));
   const source = await storage.sourceFor(path, format);
   const recentFiles = await storage.remember(path, format);
   await storage.clearRecovery(state.recoveryKey);
   state.dirty = false;
+  state.documentPath = resolve(path).toLowerCase();
   state.window.setTitle(`${basename(path)} — TXT Sheets`);
   return { status: 'saved', source, recentFiles };
 }
@@ -166,7 +171,7 @@ function installIpcHandlers(): void {
   ipcMain.handle('workbooks:new', () => { createWindow(); });
   ipcMain.handle('workbooks:open', async (event) => {
     const path = await chooseOpenPath(fileWindow(event).window);
-    if (path) createWindow(undefined, await openPath(path));
+    if (path) createWindow(path);
     return null;
   });
   ipcMain.handle('workbooks:open-external', async (event) => {
@@ -176,7 +181,13 @@ function installIpcHandlers(): void {
     if (result) return result;
     const path = state.externalPath;
     state.externalPath = undefined;
-    return path ? openPath(path) : null;
+    if (!path) return null;
+    try {
+      return await openPath(path);
+    } catch (error) {
+      state.documentPath = undefined;
+      throw error;
+    }
   });
   ipcMain.on('workbooks:cancel-external', (event) => {
     fileWindow(event).externalPath = undefined;
@@ -185,7 +196,7 @@ function installIpcHandlers(): void {
     if (typeof id !== 'string') throw new Error('Invalid recent file identifier.');
     const path = storage.getPath(id);
     if (!path) throw new Error('This recent file is no longer available.');
-    createWindow(undefined, await openPath(path));
+    createWindow(path);
     return null;
   });
   ipcMain.handle('workbooks:save', async (event, value: unknown) => {
@@ -243,6 +254,15 @@ async function saveToPathOrCancel(workbook: WorkbookDocument, state: FileWindow)
 }
 
 function createWindow(externalPath?: string, initialResult?: OpenResult, recoveryKey: string = randomUUID()): void {
+  const path = externalPath ?? (initialResult?.workbook.source && storage.getPath(initialResult.workbook.source.id));
+  const documentPath = path ? resolve(path).toLowerCase() : undefined;
+  const existing = documentPath && [...windows.values()].find((state) => state.documentPath === documentPath);
+  if (existing) {
+    if (existing.window.isMinimized()) existing.window.restore();
+    existing.window.show();
+    existing.window.focus();
+    return;
+  }
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -258,7 +278,7 @@ function createWindow(externalPath?: string, initialResult?: OpenResult, recover
       sandbox: true,
     },
   });
-  const state: FileWindow = { window, dirty: false, forceClose: false, closePromptOpen: false, recoveryKey, externalPath, initialResult };
+  const state: FileWindow = { window, dirty: false, forceClose: false, closePromptOpen: false, recoveryKey, externalPath, initialResult, documentPath };
   const windowId = window.webContents.id;
   windows.set(windowId, state);
 
@@ -274,13 +294,14 @@ function createWindow(externalPath?: string, initialResult?: OpenResult, recover
       type: 'warning', title: 'Unsaved changes', message: 'Save changes before closing?',
       buttons: ['Save', 'Close without saving', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true,
     }).then(async ({ response }) => {
+      if (window.isDestroyed()) return;
       if (response === 0) window.webContents.send('app:command', 'save-and-close');
       else if (response === 1) {
         await storage.clearRecovery(state.recoveryKey);
         state.forceClose = true;
         window?.close();
       }
-    }).finally(() => { state.closePromptOpen = false; });
+    }).catch(() => undefined).finally(() => { state.closePromptOpen = false; });
   });
   window.on('closed', () => { windows.delete(windowId); });
 }

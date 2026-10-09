@@ -1,10 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { createBlankWorkbook } from '../src/shared/types';
 import { cellKey, createFormulaEvaluator, normalizeCellInput } from '../src/renderer/formulas';
-import { fillSelection } from '../src/renderer/workbook-model';
-import { FORMULA_FUNCTIONS } from '../src/renderer/formula-functions';
+import { fillSelection, setCellInput } from '../src/renderer/workbook-model';
+import { FORMULA_FUNCTIONS, evaluateNamedFunction } from '../src/renderer/formula-functions';
 
 describe('formula evaluator', () => {
+  it('evaluates MIN and MAX over large ranges without exceeding the argument limit', () => {
+    const values = Array.from({ length: 160_000 }, (_, index) => index - 80_000);
+    expect(evaluateNamedFunction('MIN', values)).toBe(-80_000);
+    expect(evaluateNamedFunction('MAX', values)).toBe(79_999);
+    expect(evaluateNamedFunction('MIN', [])).toBe(0);
+    expect(evaluateNamedFunction('MAX', [])).toBe(0);
+  });
+  it('shares cell-input conversion for edit, paste, save, and recovery while preserving inherited styles', () => {
+    const sheet = createBlankWorkbook().sheets[0];
+    sheet.cells['0:0'] = { value: '2026-07-24', valueType: 'date', style: { numberFormat: 'm/d/yy' } };
+    setCellInput(sheet, 1, 0, '8/24');
+    expect(sheet.cells['1:0']).toEqual({ value: '2026-08-24', valueType: 'date', style: { numberFormat: 'm/d/yy' } });
+    expect(sheet.cells['1:0'].style).not.toBe(sheet.cells['0:0'].style);
+    setCellInput(sheet, 1, 0, '');
+    expect(sheet.cells['1:0']).toEqual({ value: null, valueType: 'blank', style: { numberFormat: 'm/d/yy' } });
+    sheet.cells['0:1'] = { value: null, formula: '=1+2', cachedValue: 3 };
+    setCellInput(sheet, 0, 1, '5');
+    expect(sheet.cells['0:1']).toEqual({ value: 5, valueType: 'number', style: undefined });
+    setCellInput(sheet, 0, 1, '');
+    expect(sheet.cells['0:1']).toBeUndefined();
+  });
   it('keeps named formulas in an explicit extensible registry', () => {
     expect(Object.keys(FORMULA_FUNCTIONS)).toEqual(['SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT']);
   });

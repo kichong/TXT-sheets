@@ -15,7 +15,7 @@ import {
   addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
 } from './formulas';
 import {
-  applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, nearestCellTemplate, selectedCells,
+  applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, setCellInput, selectedCells,
   resizeColumn, resizeRow, selectionBounds, selectionLabel, uniqueSheetName,
 } from './workbook-model';
 import type { Selection } from './workbook-model';
@@ -76,9 +76,25 @@ export function App() {
   const formulaRef = useRef<HTMLInputElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const workbook = history.present;
+  const savingRef = useRef(false);
+  const latestEdit = useRef({ workbook, editing, editValue, selection });
+  latestEdit.current = { workbook, editing, editValue, selection };
   const activeSheet = workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0];
   const evaluator = useMemo(() => createFormulaEvaluator(workbook), [workbook]);
   const activeCell = activeSheet.cells[cellKey(selection.focus.row, selection.focus.column)];
+
+  useEffect(() => {
+    const clamp = (point: Selection['focus']) => ({
+      row: Math.max(0, Math.min(point.row, activeSheet.rowCount - 1)),
+      column: Math.max(0, Math.min(point.column, activeSheet.columnCount - 1)),
+    });
+    setSelection((current) => {
+      const anchor = clamp(current.anchor);
+      const focus = clamp(current.focus);
+      return anchor.row === current.anchor.row && anchor.column === current.anchor.column &&
+        focus.row === current.focus.row && focus.column === current.focus.column ? current : { anchor, focus };
+    });
+  }, [activeSheet.rowCount, activeSheet.columnCount]);
 
   const commit = useCallback((mutator: (draft: WorkbookDocument) => void) => {
     setHistory((current) => {
@@ -131,7 +147,9 @@ export function App() {
   }, [handleError, openResult]);
 
   const saveWorkbook = useCallback(async (saveAs = false, closeWhenDone = false) => {
-    if (saving) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
+    const originalEdit = latestEdit.current;
     const focusTarget = document.activeElement instanceof HTMLInputElement ? document.activeElement : gridRef.current;
     setSaving(true);
     try {
@@ -139,28 +157,42 @@ export function App() {
       if (editing) {
         const sheet = current.sheets.find((item) => item.id === current.activeSheetId)!;
         const { row, column } = selection.focus;
-        const key = cellKey(row, column);
-        const existing = sheet.cells[key];
-        const template = existing?.style ? existing : nearestCellTemplate(sheet, row, column) ?? existing;
-        const normalized = normalizeCellInput(editValue, template);
-        const inheritedStyle = existing?.style ?? template?.style;
-        if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
-        else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
-        else delete sheet.cells[key];
+        setCellInput(sheet, row, column, editValue);
       }
       const prepared = workbookWithFormulaResults(current);
       const result = saveAs ? await window.spreadsheet.saveAs(prepared) : await window.spreadsheet.save(prepared);
       if (result.status === 'saved' && result.source) {
         const next = { ...prepared, source: result.source, title: result.source.displayName.replace(/\.(xlsx|csv|tsv)$/iu, '') };
-        setHistory((current) => ({ ...current, present: next }));
+        const latest = latestEdit.current;
+        const changedDuringSave = latest.workbook !== originalEdit.workbook ||
+          latest.editing !== originalEdit.editing || latest.editValue !== originalEdit.editValue ||
+          (latest.editing && (latest.selection.focus.row !== originalEdit.selection.focus.row || latest.selection.focus.column !== originalEdit.selection.focus.column));
+        const withSource = (document: WorkbookDocument) => ({ ...document, source: result.source, title: next.title });
+        setHistory((current) => ({
+          past: current.past.map(withSource),
+          present: changedDuringSave ? withSource(current.present) : next,
+          future: current.future.map(withSource),
+        }));
         setRecentFiles(result.recentFiles);
-        setDirty(false);
-        setEditing(false);
+        setDirty(changedDuringSave);
+        if (!changedDuringSave) setEditing(false);
+        window.spreadsheet.setDirty(changedDuringSave);
+        if (changedDuringSave) {
+          const recovery = cloneWorkbook(withSource(latest.workbook));
+          if (latest.editing) {
+            const sheet = recovery.sheets.find((item) => item.id === recovery.activeSheetId)!;
+            setCellInput(sheet, latest.selection.focus.row, latest.selection.focus.column, latest.editValue);
+          }
+          await window.spreadsheet.writeRecovery(workbookWithFormulaResults(recovery));
+          setMessage('Saved the earlier changes. Your latest edits still need saving.');
+          return;
+        }
         setMessage(saveAs ? `Saved as ${result.source.displayName}` : `Saved ${result.source.displayName}`);
         if (closeWhenDone) window.spreadsheet.requestCloseAfterSave();
       }
     } catch (error) { handleError(error); }
     finally {
+      savingRef.current = false;
       setSaving(false);
       requestAnimationFrame(() => {
         if (focusTarget?.isConnected) focusTarget.focus();
@@ -227,10 +259,20 @@ export function App() {
 
   useEffect(() => {
     window.spreadsheet.setDirty(dirty || editing);
-    if (!dirty) return;
-    const timer = window.setTimeout(() => { void window.spreadsheet.writeRecovery(workbookWithFormulaResults(workbook)).catch(handleError); }, 800);
+  }, [dirty, editing]);
+
+  useEffect(() => {
+    if ((!dirty && !editing) || saving) return;
+    const timer = window.setTimeout(() => {
+      const recovery = cloneWorkbook(workbook);
+      if (editing) {
+        const sheet = recovery.sheets.find((item) => item.id === recovery.activeSheetId)!;
+        setCellInput(sheet, selection.focus.row, selection.focus.column, editValue);
+      }
+      void window.spreadsheet.writeRecovery(workbookWithFormulaResults(recovery)).catch(handleError);
+    }, 800);
     return () => window.clearTimeout(timer);
-  }, [dirty, editing, handleError, workbook]);
+  }, [dirty, editing, editValue, saving, selection.focus.row, selection.focus.column, handleError, workbook]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -250,19 +292,15 @@ export function App() {
   }, [message]);
 
   const commitEdit = useCallback((move?: 'down' | 'right') => {
-    if (!editing) return;
+    if (!editing || !latestEdit.current.editing) return;
+    latestEdit.current = { ...latestEdit.current, editing: false };
     const point = selection.focus;
-    commit((draft) => {
-      const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
-      const key = cellKey(point.row, point.column);
-      const existing = sheet.cells[key];
-      const template = existing?.style ? existing : nearestCellTemplate(sheet, point.row, point.column) ?? existing;
-      const normalized = normalizeCellInput(editValue, template);
-      const inheritedStyle = existing?.style ?? template?.style;
-      if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
-      else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
-      else delete sheet.cells[key];
-    });
+    if (editValue !== editableCellText(activeCell)) {
+      commit((draft) => {
+        const sheet = draft.sheets.find((item) => item.id === draft.activeSheetId)!;
+        setCellInput(sheet, point.row, point.column, editValue);
+      });
+    }
     setEditing(false);
     if (move) {
       const focus = {
@@ -272,7 +310,13 @@ export function App() {
       setSelection({ anchor: focus, focus });
       requestAnimationFrame(() => gridRef.current?.focus());
     }
-  }, [activeSheet.columnCount, activeSheet.rowCount, commit, editValue, editing, selection.focus]);
+  }, [activeCell, activeSheet.columnCount, activeSheet.rowCount, commit, editValue, editing, selection.focus]);
+
+  const cancelEdit = useCallback(() => {
+    latestEdit.current = { ...latestEdit.current, editing: false };
+    setEditing(false);
+    gridRef.current?.focus();
+  }, []);
 
   const startEdit = useCallback((initial?: string) => {
     setEditValue(initial ?? editableCellText(activeCell));
@@ -315,14 +359,7 @@ export function App() {
           const row = origin.row + rowOffset;
           const column = origin.column + columnOffset;
           if (row >= sheet.rowCount || column >= sheet.columnCount) return;
-          const key = cellKey(row, column);
-          const existing = sheet.cells[key];
-          const template = existing?.style ? existing : nearestCellTemplate(sheet, row, column) ?? existing;
-          const normalized = normalizeCellInput(value, template);
-          const inheritedStyle = existing?.style ?? template?.style;
-          if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
-          else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
-          else delete sheet.cells[key];
+          setCellInput(sheet, row, column, value);
         }));
       });
       const focus = { row: Math.min(activeSheet.rowCount - 1, origin.row + rows.length - 1), column: Math.min(activeSheet.columnCount - 1, origin.column + Math.max(0, ...rows.map((row) => row.length - 1))) };
@@ -560,10 +597,10 @@ export function App() {
               <IconButton label="Rows and columns" onClick={() => setStructureMenuOpen((value) => !value)}><Settings2 size={16} /></IconButton>
               {structureMenuOpen ? (
                 <div className="popover structure-menu">
-                  <button onClick={() => { commit((draft) => insertRow(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection.focus.row)); setStructureMenuOpen(false); }}><Rows3 size={15} /> Insert row above</button>
-                  <button onClick={() => { commit((draft) => deleteRow(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection.focus.row)); setStructureMenuOpen(false); }}><Trash2 size={15} /> Delete row</button>
-                  <button onClick={() => { commit((draft) => insertColumn(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection.focus.column)); setStructureMenuOpen(false); }}><Columns3 size={15} /> Insert column left</button>
-                  <button onClick={() => { commit((draft) => deleteColumn(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection.focus.column)); setStructureMenuOpen(false); }}><Trash2 size={15} /> Delete column</button>
+                  <button onClick={() => { commit((draft) => insertRow(draft, draft.activeSheetId, selection.focus.row)); setStructureMenuOpen(false); }}><Rows3 size={15} /> Insert row above</button>
+                  <button onClick={() => { commit((draft) => deleteRow(draft, draft.activeSheetId, selection.focus.row)); setStructureMenuOpen(false); }}><Trash2 size={15} /> Delete row</button>
+                  <button onClick={() => { commit((draft) => insertColumn(draft, draft.activeSheetId, selection.focus.column)); setStructureMenuOpen(false); }}><Columns3 size={15} /> Insert column left</button>
+                  <button onClick={() => { commit((draft) => deleteColumn(draft, draft.activeSheetId, selection.focus.column)); setStructureMenuOpen(false); }}><Trash2 size={15} /> Delete column</button>
                 </div>
               ) : null}
             </div>
@@ -582,7 +619,7 @@ export function App() {
             placeholder="Enter a value or formula"
             onFocus={() => { if (!editing) startEdit(); }}
             onChange={(event) => { if (!editing) startEdit(event.target.value); else setEditValue(event.target.value); }}
-            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitEdit('down'); } if (event.key === 'Escape') { setEditing(false); gridRef.current?.focus(); } }}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitEdit('down'); } if (event.key === 'Escape') { event.preventDefault(); cancelEdit(); } }}
           />
         </div>
       </header>
@@ -608,9 +645,9 @@ export function App() {
           editValue={editValue}
           onEditValueChange={setEditValue}
           onCommitEdit={commitEdit}
-          onCancelEdit={() => { setEditing(false); gridRef.current?.focus(); }}
+          onCancelEdit={cancelEdit}
           onStartEdit={startEdit}
-          onSelectionChange={(next) => { setSelection(next); setEditing(false); gridRef.current?.focus(); }}
+          onSelectionChange={(next) => { setSelection(next); cancelEdit(); }}
           onFillSelection={fillSelectedCells}
           onPickFormulaReference={pickFormulaReference}
           referencePicking={editing && editValue.trimStart().startsWith('=')}
@@ -659,7 +696,13 @@ export function App() {
                 dropSheet(sheet.id, event.clientX < rect.left + rect.width / 2 ? 'before' : 'after');
               }}
               onDragEnd={() => { draggedSheetId.current = null; setSheetDrop(null); }}
-              onClick={() => { commit((draft) => { draft.activeSheetId = sheet.id; }); setSelection(INITIAL_SELECTION); setDirty(dirty); }}
+              onClick={() => {
+                setHistory((current) => current.present.activeSheetId === sheet.id ? current : {
+                  ...current, present: { ...current.present, activeSheetId: sheet.id },
+                });
+                setSelection(INITIAL_SELECTION);
+                cancelEdit();
+              }}
               onDoubleClick={(event) => setSheetMenu({ id: sheet.id, x: 0, y: 0, trigger: event.currentTarget, rename: true })}
               onContextMenu={(event) => {
                 event.preventDefault();

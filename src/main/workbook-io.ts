@@ -245,9 +245,13 @@ export async function exportWorkbook(workbook: WorkbookDocument, path: string): 
   const format = formatForPath(path);
   const active = workbook.sheets.find((sheet) => sheet.id === workbook.activeSheetId) ?? workbook.sheets[0];
   if (format === 'csv' || format === 'tsv') {
-    const used = Object.keys(active.cells).map((key) => key.split(':').map(Number));
-    const maxRow = Math.max(0, ...used.map(([row]) => row));
-    const maxColumn = Math.max(0, ...used.map(([, column]) => column));
+    let maxRow = 0;
+    let maxColumn = 0;
+    for (const key of Object.keys(active.cells)) {
+      const [row, column] = key.split(':').map(Number);
+      maxRow = Math.max(maxRow, row);
+      maxColumn = Math.max(maxColumn, column);
+    }
     const rows: CellScalar[][] = Array.from({ length: maxRow + 1 }, (_, row) =>
       Array.from({ length: maxColumn + 1 }, (_, column) => {
         const cell = active.cells[`${row}:${column}`];
@@ -257,6 +261,7 @@ export async function exportWorkbook(workbook: WorkbookDocument, path: string): 
   }
   const excel = new ExcelJS.Workbook();
   excel.creator = 'TXT Sheets';
+  excel.calcProperties.fullCalcOnLoad = true;
   excel.modified = new Date();
   for (const sheet of workbook.sheets) {
     const worksheet = excel.addWorksheet(sheet.name, {

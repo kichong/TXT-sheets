@@ -6,7 +6,7 @@ export type FormulaResult = FormulaAtom;
 type ExpressionValue = FormulaResult | FormulaResult[];
 
 interface Token {
-  type: 'number' | 'word' | 'quoted' | 'operator' | 'eof';
+  type: 'number' | 'word' | 'quoted' | 'operator' | 'error' | 'eof';
   value: string;
 }
 
@@ -63,6 +63,8 @@ function tokenize(source: string): Token[] {
   while (index < source.length) {
     const char = source[index];
     if (/\s/u.test(char)) { index += 1; continue; }
+    const error = /^#(?:REF!|DIV\/0!|VALUE!|NAME\?|CIRC!)/iu.exec(source.slice(index));
+    if (error) { tokens.push({ type: 'error', value: error[0].toUpperCase() }); index += error[0].length; continue; }
     if (char === "'") {
       let value = '';
       index += 1;
@@ -140,6 +142,7 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
       } else {
         addressToken = consume();
       }
+      if (addressToken.type === 'error') return addressToken.value as FormulaError;
       const start = parseCellAddress(addressToken.value);
       if (!start) { position -= 1; return null; }
       if (!accept(':')) return evaluateCell(referenceSheet, start.row, start.column);
@@ -187,6 +190,7 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
         const value = parseExpression();
         return accept(')') ? value : '#VALUE!';
       }
+      if (peek().type === 'error') return consume().value as FormulaError;
       if (peek().type === 'number') return Number(consume().value);
       if (peek().type === 'word' || peek().type === 'quoted') {
         if (peek().type === 'word' && peek(1).value === '(' && !parseCellAddress(peek().value)) {
