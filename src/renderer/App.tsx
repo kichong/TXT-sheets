@@ -78,6 +78,9 @@ export function App() {
   const formulaRef = useRef<HTMLInputElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const workbook = history.present;
+  useEffect(() => {
+    document.title = `${workbook.source?.displayName || workbook.title.trim() || 'Untitled workbook'} — TXT Sheets`;
+  }, [workbook.source?.displayName, workbook.title]);
   const savingRef = useRef(false);
   const latestEdit = useRef({ workbook, editing, editValue, selection });
   latestEdit.current = { workbook, editing, editValue, selection };

@@ -36,6 +36,16 @@ async function waitWindows(count) {
   throw new Error(`Expected ${count} windows; got ${application.windows().length}`);
 }
 
+async function expectWindowTitle(page, name) {
+  const expected = `${name} — TXT ${docs ? 'Docs' : 'Sheets'}`;
+  await page.waitForFunction((title) => document.title === title, expected);
+  const nativeWindow = await application.browserWindow(page);
+  assert.equal(await nativeWindow.evaluate((window) => window.getTitle()), expected);
+  await nativeWindow.evaluate((window) => window.minimize());
+  assert.equal(await nativeWindow.evaluate((window) => window.getTitle()), expected);
+  await nativeWindow.evaluate((window) => window.restore());
+}
+
 async function edit(page, text) {
   if (docs) {
     await page.locator(selector).click();
@@ -57,11 +67,13 @@ try {
   await first.locator(selector).waitFor();
   const firstId = await (await application.browserWindow(first)).evaluate((window) => window.id);
   await first.waitForFunction((docs) => (docs ? document.querySelector('.document-editor') : document.querySelector('[role="gridcell"][aria-label="A1"]'))?.textContent?.includes('original'), docs);
+  await expectWindowTitle(first, docs ? 'first.txt' : 'first.csv');
   await edit(first, ' first unsaved');
   await first.evaluate((api) => window[api].newWindow(), api);
   const [, second] = await waitWindows(2);
   const secondId = await (await application.browserWindow(second)).evaluate((window) => window.id);
   assert.ok(!(await content(second)).includes('original'));
+  await expectWindowTitle(second, docs ? 'Untitled document' : 'Untitled workbook');
   await edit(second, 'second unsaved');
   await second.waitForTimeout(1600);
   const firstRecovery = await first.evaluate(({ api, docs }) => docs ? window[api].readRecovery() : window[api].getRecovery(), { api, docs });
@@ -81,6 +93,7 @@ try {
   else await second.keyboard.press('Control+s');
   await second.waitForTimeout(600);
   assert.ok((await readFile(savedPath, 'utf8')).includes('second unsaved'));
+  await expectWindowTitle(second, docs ? 'saved.txt' : 'saved.csv');
   assert.ok(await first.evaluate(({ api, docs }) => docs ? window[api].readRecovery() : window[api].getRecovery(), { api, docs }));
   assert.equal(await second.evaluate(({ api, docs }) => docs ? window[api].readRecovery() : window[api].getRecovery(), { api, docs }), null);
   const blocked = await second.evaluate(async (api) => { try { await window[api].installUpdate(null); return false; } catch (error) { return error.message.includes('Save'); } }, api);
