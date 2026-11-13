@@ -41,6 +41,8 @@ TXT Sheets starts with Excel-compatible arithmetic (`+`, `-`, `*`, `/`, `^`), pa
 - `MIN`
 - `MAX`
 - `COUNT`
+- `COUNTIFS` (text, wildcard, and numeric criteria)
+- `HYPERLINK` (display label only)
 
 Formula tokenization, parsing, reference resolution, evaluation, and named-function registration are separate layers. New named formulas can be added to [`src/renderer/formula-functions.ts`](src/renderer/formula-functions.ts) without changing the grid or workbook file layer.
 

@@ -1,8 +1,9 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
+import { isSupportedFunction } from '../renderer/formula-functions';
 import { randomUUID } from 'node:crypto';
-import { extname, parse } from 'node:path';
+import { extname, parse, posix } from 'node:path';
 import type {
   CellBorderSide,
   CellData,
@@ -92,15 +93,14 @@ function compatibilityIssuesFor(worksheet: ExcelJS.Worksheet): CompatibilityIssu
   const model = worksheet.model as ExcelJS.WorksheetModel & { tables?: unknown[]; conditionalFormattings?: unknown[]; dataValidations?: { model?: object } };
   if (model.tables?.length) issues.push({ feature: 'Excel tables', detail: `${worksheet.name} contains structured tables. Values and styling are shown, but table metadata may be simplified on save.` });
   if (model.conditionalFormattings?.length) issues.push({ feature: 'Conditional formatting', detail: `${worksheet.name} contains conditional formatting that is not evaluated by this basic editor.` });
-  if (model.dataValidations?.model && Object.keys(model.dataValidations.model).length) issues.push({ feature: 'Data validation', detail: `${worksheet.name} contains validation rules that are not editable here.` });
+  if (model.dataValidations && Object.keys(model.dataValidations.model ?? model.dataValidations).length) issues.push({ feature: 'Data validation', detail: `${worksheet.name} contains validation rules that are not editable here and are not preserved on save.` });
   if (worksheet.state !== 'visible') issues.push({ feature: 'Hidden sheets', detail: `${worksheet.name} was hidden and is visible while editing here.` });
-  const supportedFunctions = new Set(['SUM', 'AVERAGE', 'MIN', 'MAX', 'COUNT']);
   const unsupportedFunctions = new Set<string>();
   worksheet.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => {
     if (!cell.formula) return;
     for (const match of cell.formula.matchAll(/\b([A-Z][A-Z0-9.]*)\s*\(/giu)) {
       const name = match[1].toUpperCase();
-      if (!supportedFunctions.has(name)) unsupportedFunctions.add(name);
+      if (!isSupportedFunction(name)) unsupportedFunctions.add(name);
     }
   }));
   if (unsupportedFunctions.size) issues.push({
@@ -116,8 +116,9 @@ function importWorksheet(worksheet: ExcelJS.Worksheet): SheetDocument {
     row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
       if (cell.type === ExcelJS.ValueType.Merge) return;
       const style = importStyle(cell);
-      if ((cell.value === null || cell.value === undefined) && !style) return;
+      if ((cell.value === null || cell.value === undefined) && !style && !cell.note) return;
       const imported = formulaCell(cell) ?? { ...scalarFromExcel(cell.value), style };
+      if (cell.note) imported.note = typeof cell.note === 'string' ? cell.note : (cell.note.texts ?? []).map((part) => part.text).join('');
       cells[`${rowNumber - 1}:${columnNumber - 1}`] = imported;
     });
   });
@@ -180,14 +181,39 @@ export async function importWorkbook(bytes: Uint8Array, path: string, source: Wo
     // namespace. Excel accepts it, while ExcelJS expects that namespace as the
     // default. Normalize only that equivalent XML representation and retry.
     const zip = await JSZip.loadAsync(bytes);
-    const entries = Object.values(zip.files).filter((entry) => !entry.dir && entry.name.startsWith('xl/') && entry.name.endsWith('.xml'));
+    // ExcelJS also assumes relative relationship targets and numbered,
+    // case-sensitive VML filenames. These are packaging conventions, not OOXML
+    // requirements. Normalize aliases in memory without touching the source.
+    const aliases = new Map<string, string>();
+    let drawingNumber = 1;
+    for (const entry of Object.values(zip.files)) {
+      if (/^xl\/drawings\/.*\.vml$/iu.test(entry.name)) {
+        let target: string;
+        do { target = `xl/drawings/vmlDrawing${drawingNumber++}.vml`; }
+        while (zip.file(target) || [...aliases.values()].includes(target));
+        aliases.set(entry.name, target);
+        zip.file(target, await entry.async('uint8array'));
+      }
+    }
+    const entries = Object.values(zip.files).filter((entry) => !entry.dir && entry.name.startsWith('xl/') && /\.(xml|rels)$/u.test(entry.name));
     let normalized = false;
     for (const entry of entries) {
       const xml = await entry.async('string');
-      if (!xml.includes('xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')) continue;
-      const next = xml
+      let next = xml.includes('xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"') ? xml
         .replace('xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')
-        .replace(/<(\/?)x:/gu, '<$1');
+        .replace(/<(\/?)x:/gu, '<$1') : xml;
+      if (entry.name.endsWith('.rels')) {
+        const base = posix.dirname(posix.dirname(entry.name));
+        next = next.replace(/<(?:\w+:)?Relationship\b[^>]*>/gu, (relationship) => {
+          if (/\bTargetMode="External"/iu.test(relationship)) return relationship;
+          return relationship.replace(/\bTarget="([^"]+)"/gu, (attribute: string, target: string) => {
+            if (/^[a-z][a-z\d+.-]*:/iu.test(target) || target.startsWith('#')) return attribute;
+            const absolute = target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(base, target));
+            return `Target="${posix.relative(base, aliases.get(absolute) ?? absolute)}"`;
+          });
+        });
+      }
+      if (next === xml) continue;
       zip.file(entry.name, next);
       normalized = true;
     }
@@ -229,6 +255,7 @@ function exportStyle(cell: ExcelJS.Cell, style: CellStyle | undefined): void {
 }
 
 function exportCellValue(cell: ExcelJS.Cell, data: CellData): void {
+  if (data.note !== undefined) cell.note = data.note;
   if (data.formula) {
     cell.value = { formula: data.formula.replace(/^=/u, ''), result: data.cachedValue ?? undefined } as ExcelJS.CellFormulaValue;
   } else if (data.valueType === 'date' && typeof data.value === 'string') {

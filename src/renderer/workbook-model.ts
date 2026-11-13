@@ -84,7 +84,9 @@ export function setCellInput(sheet: SheetDocument, row: number, column: number, 
   const inheritedStyle = existing?.style ?? template?.style;
   if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
   else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
+  else if (existing?.note !== undefined) sheet.cells[key] = { value: null, valueType: 'blank' };
   else delete sheet.cells[key];
+  if (existing?.note !== undefined) sheet.cells[key].note = existing.note;
 }
 
 function modulo(value: number, divisor: number): number {

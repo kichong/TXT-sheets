@@ -1,12 +1,12 @@
 import type { CellData, CellScalar, SheetDocument, WorkbookDocument } from '../shared/types';
-import { evaluateNamedFunction, FORMULA_FUNCTIONS, isFormulaError } from './formula-functions';
+import { evaluateFunctionArguments, isSupportedFunction, isFormulaError } from './formula-functions';
 import type { FormulaAtom, FormulaError } from './formula-functions';
 
 export type FormulaResult = FormulaAtom;
 type ExpressionValue = FormulaResult | FormulaResult[];
 
 interface Token {
-  type: 'number' | 'word' | 'quoted' | 'operator' | 'error' | 'eof';
+  type: 'number' | 'word' | 'quoted' | 'string' | 'operator' | 'error' | 'eof';
   value: string;
 }
 
@@ -53,16 +53,23 @@ function scalarNumber(value: ExpressionValue): number | FormulaError {
   return Number.isFinite(numeric) ? numeric : '#VALUE!';
 }
 
-function flatten(values: ExpressionValue[]): FormulaResult[] {
-  return values.flatMap((value) => Array.isArray(value) ? value : [value]);
-}
-
 function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
   let index = 0;
   while (index < source.length) {
     const char = source[index];
     if (/\s/u.test(char)) { index += 1; continue; }
+    if (char === '"') {
+      let value = '';
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === '"' && source[index + 1] === '"') { value += '"'; index += 2; continue; }
+        if (source[index] === '"') { index += 1; break; }
+        value += source[index++];
+      }
+      tokens.push({ type: 'string', value });
+      continue;
+    }
     const error = /^#(?:REF!|DIV\/0!|VALUE!|NAME\?|CIRC!)/iu.exec(source.slice(index));
     if (error) { tokens.push({ type: 'error', value: error[0].toUpperCase() }); index += error[0].length; continue; }
     if (char === "'") {
@@ -113,7 +120,7 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
     if (!cell) return null;
     if (!cell.formula) return cell.value;
     const functions = [...cell.formula.matchAll(/\b([A-Z][A-Z0-9.]*)\s*\(/giu)].map((match) => match[1].toUpperCase());
-    if (cell.cachedValue !== undefined && functions.some((name) => !FORMULA_FUNCTIONS[name])) return cell.cachedValue;
+    if (cell.cachedValue !== undefined && functions.some((name) => !isSupportedFunction(name))) return cell.cachedValue;
     active.add(memoKey);
     const result = evaluateFormula(sheet.id, cell.formula);
     active.delete(memoKey);
@@ -182,7 +189,7 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
         do { args.push(parseExpression()); } while (accept(','));
         if (!accept(')')) return '#VALUE!';
       }
-      return evaluateNamedFunction(name, flatten(args));
+      return evaluateFunctionArguments(name, args);
     };
 
     const parsePrimary = (): ExpressionValue => {
@@ -192,6 +199,7 @@ export function createFormulaEvaluator(workbook: WorkbookDocument): FormulaEvalu
       }
       if (peek().type === 'error') return consume().value as FormulaError;
       if (peek().type === 'number') return Number(consume().value);
+      if (peek().type === 'string') return consume().value;
       if (peek().type === 'word' || peek().type === 'quoted') {
         if (peek().type === 'word' && peek(1).value === '(' && !parseCellAddress(peek().value)) {
           const name = consume().value;

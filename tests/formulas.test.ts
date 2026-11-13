@@ -5,6 +5,30 @@ import { fillSelection, setCellInput } from '../src/renderer/workbook-model';
 import { FORMULA_FUNCTIONS, evaluateNamedFunction } from '../src/renderer/formula-functions';
 
 describe('formula evaluator', () => {
+  it('recalculates COUNTIFS with quoted, wildcard, numeric, blank, and cross-sheet criteria', () => {
+    const w = createBlankWorkbook();
+    const s = w.sheets[0];
+    s.name = 'Status';
+    ['Done', 'done', 'Draft', 'Filed + served', 'A*', null].forEach((value, row) => {
+      s.cells[`${row}:0`] = { value };
+      s.cells[`${row}:1`] = { value: row };
+    });
+    const evalFormula = (formula: string) => createFormulaEvaluator(w).evaluateFormula(s.id, formula);
+    expect(evalFormula('=COUNTIFS(Status!A1:A6,"Done")')).toBe(2);
+    expect(evalFormula('=countifs(Status!A1:A6,"Done")')).toBe(2);
+    expect(evalFormula('=COUNTIFS(A1:A6,"D*",B1:B6,">=1")')).toBe(2);
+    expect(evalFormula('=COUNTIFS(A1:A6,"A~*")')).toBe(1);
+    expect(evalFormula('=COUNTIFS(A1:A6,"")')).toBe(1);
+    expect(evalFormula('=COUNTIFS(A1:A6,"Done",B1:B2,">0")')).toBe('#VALUE!');
+    expect(evalFormula('=HYPERLINK("relative.pdf","Open ""draft""")')).toBe('Open "draft"');
+    s.cells['0:0'].value = 'Draft';
+    expect(evalFormula('=COUNTIFS(A1:A6,"Done")')).toBe(1);
+    s.cells['0:0'].note = 'Source note';
+    setCellInput(s, 0, 0, 'Edited');
+    expect(s.cells['0:0'].note).toBe('Source note');
+    setCellInput(s, 0, 0, '');
+    expect(s.cells['0:0'].note).toBe('Source note');
+  });
   it('evaluates MIN and MAX over large ranges without exceeding the argument limit', () => {
     const values = Array.from({ length: 160_000 }, (_, index) => index - 80_000);
     expect(evaluateNamedFunction('MIN', values)).toBe(-80_000);

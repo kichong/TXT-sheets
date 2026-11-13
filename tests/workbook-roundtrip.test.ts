@@ -13,6 +13,43 @@ import { insertRow, deleteColumn } from '../src/renderer/workbook-model';
 const fixturePath = resolve('tests/fixtures/fidelity-fixture.xlsx');
 
 describe('Excel workbook fidelity', () => {
+  it('opens prefixed OOXML with absolute note/table targets and nonstandard VML names', async () => {
+    const excel = new ExcelJS.Workbook();
+    const sheet = excel.addWorksheet('Actions');
+    sheet.getCell('A1').value = 'A long heading';
+    sheet.getCell('A1').font = { size: 21, bold: true };
+    sheet.getCell('A3').note = 'Keep this source note';
+    sheet.getCell('D1').value = { text: 'External link', hyperlink: '/external/reference.pdf' };
+    sheet.addTable({ name: 'ActionsTable', ref: 'A3', headerRow: true, columns: [{ name: 'Status' }], rows: [['Done'], ['Draft']] });
+    sheet.getCell('C1').value = { formula: 'COUNTIFS(A4:A5,"Done")', result: 1 };
+    sheet.getCell('A4').dataValidation = { type: 'list', formulae: ['"Done,Draft"'] };
+    const zip = await JSZip.loadAsync(await excel.xlsx.writeBuffer());
+    for (const entry of Object.values(zip.files)) {
+      if (entry.dir) continue;
+      if (entry.name.endsWith('.xml') && entry.name.startsWith('xl/')) {
+        const xml = await entry.async('string');
+        if (xml.includes('xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')) {
+          zip.file(entry.name, xml.replace('xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', 'xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"').replace(/<(\/?)([A-Za-z][\w]*)(?=[\s/>])/gu, '<$1x:$2'));
+        }
+      }
+    }
+    const vml = zip.file('xl/drawings/vmlDrawing1.vml')!;
+    zip.file('xl/drawings/vmldrawing.vml', await vml.async('string'));
+    zip.remove(vml.name);
+    const rels = zip.file('xl/worksheets/_rels/sheet1.xml.rels')!;
+    zip.file(rels.name, (await rels.async('string')).replace(/Target="\.\.\//gu, 'Target="/xl/').replace('vmlDrawing1.vml', 'vmldrawing.vml'));
+    const source = { id: 'synthetic', displayName: 'synthetic.xlsx', format: 'xlsx' as const };
+    const imported = await importWorkbook(await zip.generateAsync({ type: 'uint8array' }), 'synthetic.xlsx', source);
+    expect(imported.sheets[0].cells['0:0']).toMatchObject({ value: 'A long heading', style: { fontSize: 21, bold: true } });
+    expect(imported.sheets[0].cells['2:0'].note).toBe('Keep this source note');
+    expect(imported.sheets[0].cells['0:3'].hyperlink).toBe('/external/reference.pdf');
+    expect(imported.compatibilityIssues.map((issue) => issue.feature)).toEqual(expect.arrayContaining(['Excel tables', 'Data validation']));
+    expect(imported.compatibilityIssues.some((issue) => issue.feature === 'Advanced formulas')).toBe(false);
+    expect(createFormulaEvaluator(imported).evaluateCell(imported.activeSheetId, 0, 2)).toBe(1);
+    const reopened = await importWorkbook(await exportWorkbook(imported, 'roundtrip.xlsx'), 'roundtrip.xlsx', source);
+    expect(reopened.sheets[0].cells['2:0'].note).toBe('Keep this source note');
+    expect(reopened.sheets[0].cells['0:2'].formula).toBe('=COUNTIFS(A4:A5,"Done")');
+  });
   it('preserves structural reference edits, merged ranges, frozen panes, and deleted-reference errors across XLSX saves', async () => {
     const workbook = createBlankWorkbook();
     const data = workbook.sheets[0];

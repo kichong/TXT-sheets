@@ -81,7 +81,7 @@ function styleForCell(cell: CellData | undefined): CSSProperties {
     return value?.style ? `${value.style === 'thick' ? 3 : value.style === 'medium' ? 2 : 1}px ${value.style === 'dashed' || value.style === 'dotted' || value.style === 'double' ? value.style : 'solid'} ${value.color ?? 'var(--gridline-strong)'}` : undefined;
   };
   return {
-    fontFamily: style?.fontFamily,
+    fontFamily: style?.fontFamily ? `${JSON.stringify(style.fontFamily)}, Calibri, "Segoe UI", sans-serif` : undefined,
     fontSize: style?.fontSize ? `${style.fontSize}pt` : undefined,
     fontWeight: style?.bold ? 700 : undefined,
     fontStyle: style?.italic ? 'italic' : undefined,
@@ -90,7 +90,7 @@ function styleForCell(cell: CellData | undefined): CSSProperties {
     backgroundColor: style?.fillColor,
     textAlign: style?.horizontal,
     alignItems: style?.vertical === 'top' ? 'flex-start' : style?.vertical === 'bottom' ? 'flex-end' : 'center',
-    whiteSpace: style?.wrapText ? 'normal' : 'nowrap',
+    whiteSpace: style?.wrapText ? 'pre-wrap' : 'nowrap',
     borderTop: border('top'), borderRight: border('right'), borderBottom: border('bottom'), borderLeft: border('left'),
   };
 }
@@ -324,7 +324,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
   return (
     <div
       ref={setScrollElement}
-      className="spreadsheet-scroll"
+      className={`spreadsheet-scroll${sheet.hiddenGridlines ? ' hide-gridlines' : ''}`}
       tabIndex={0}
       role="grid"
       aria-label={`${sheet.name} spreadsheet grid`}
@@ -434,19 +434,34 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
             for (let index = merge.masterRow; index <= merge.endRow; index += 1) height += sheet.rowHeights[String(index)] ?? DEFAULT_ROW_HEIGHT;
           }
           const cell = sheet.cells[key];
+          // Excel lets unwrapped labels extend through adjacent empty cells.
+          // Keep the hit target/selection at its real size and extend only text.
+          let textWidth = width - 12;
+          const spills = !merge && typeof cell?.value === 'string' && !cell.formula
+            && !cell.style?.wrapText && (!cell.style?.horizontal || cell.style.horizontal === 'left');
+          if (spills) {
+            for (let next = column.index + 1; next < sheet.columnCount; next += 1) {
+              const neighbor = sheet.cells[cellKey(row.index, next)];
+              if (mergeMap.has(cellKey(row.index, next)) || neighbor?.formula || (neighbor?.value !== null && neighbor?.value !== undefined && neighbor.value !== '')) break;
+              textWidth += sheet.columnWidths[String(next)] ?? DEFAULT_COLUMN_WIDTH;
+            }
+          }
           const selected = row.index >= bounds.top && row.index <= bounds.bottom && column.index >= bounds.left && column.index <= bounds.right;
           const active = selection.focus.row === row.index && selection.focus.column === column.index;
           return (
             <div
               role="gridcell"
               aria-label={addressForCell(row.index, column.index)}
+              title={cell?.note}
               aria-selected={selected}
               key={key}
               className={`grid-cell ${selected ? 'is-selected' : ''} ${active ? 'is-active' : ''} ${cell?.formula ? 'has-formula' : ''}`}
               style={{
                 width, height,
+                padding: width < 64 ? '3px 2px' : undefined,
                 transform: `translate(${ROW_HEADER_WIDTH + column.start}px, ${COLUMN_HEADER_HEIGHT + row.start}px)`,
                 ...styleForCell(cell),
+                ...(spills ? { overflow: 'visible', zIndex: active ? 4 : 2 } : {}),
               }}
               onPointerDown={(event) => pointerDown(event, row.index, column.index)}
               onContextMenu={(event) => contextMenu(event, row.index, column.index)}
@@ -462,7 +477,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
                 }
               }}
             >
-              <span>{displayValue(cell, evaluator.evaluateCell(sheet.id, row.index, column.index))}</span>
+              <span style={spills ? { width: textWidth, flexShrink: 0, pointerEvents: 'none' } : undefined}>{displayValue(cell, evaluator.evaluateCell(sheet.id, row.index, column.index))}</span>
               {row.index === bounds.bottom && column.index === bounds.right && !editing ? (
                 <button type="button" className="fill-handle" aria-label="Drag to fill selected cells" onPointerDown={beginFill} />
               ) : null}

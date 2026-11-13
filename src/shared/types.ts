@@ -33,6 +33,7 @@ export interface CellData {
   formula?: string;
   cachedValue?: CellScalar;
   hyperlink?: string;
+  note?: string;
   style?: CellStyle;
 }
 
