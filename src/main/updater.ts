@@ -80,7 +80,8 @@ export class AppUpdateManager {
 
   installUpdate(): void {
     if (this.state.phase !== 'downloaded') throw new Error('No downloaded update is ready to install.');
-    this.updater.quitAndInstall(false, true);
+    // Keep the update inside the app: silent installer, then automatic relaunch.
+    this.updater.quitAndInstall(true, true);
   }
 
   private setState(patch: Partial<AppUpdateState>): void {

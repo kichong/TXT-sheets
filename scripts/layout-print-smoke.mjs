@@ -1,0 +1,122 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import ExcelJS from 'exceljs';
+import { _electron as electron } from 'playwright';
+
+const directory = await mkdtemp(join(tmpdir(), 'txt-sheets-layout-print-'));
+const file = join(directory, 'layout.xlsx');
+const fixture = new ExcelJS.Workbook();
+const sheet = fixture.addWorksheet('Layout');
+sheet.getColumn('B').width = 12; sheet.getColumn('C').width = 16; sheet.getColumn('D').width = 20;
+sheet.getCell('B2').value = 'Merged heading';
+sheet.getCell('F3').value = 'Vertical';
+sheet.getCell('A10').value = 'Keep'; sheet.getCell('B10').value = 'Other';
+for (let row = 15; row <= 160; row++) { sheet.getCell(row, 1).value = `Row ${row}`; sheet.getCell(row, 2).value = row; }
+sheet.getCell('A160').value = 'END160';
+sheet.getCell('C15').value = { formula: 'B15*2', result: 0 };
+sheet.getCell('C15').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } };
+fixture.addWorksheet('Second').getCell('A1').value = 'SECOND_SHEET_MARKER';
+await fixture.xlsx.writeFile(file);
+const packaged = process.argv.includes('--packaged');
+const app = await electron.launch({ ...(packaged ? { executablePath: resolve('release/win-unpacked/TXT Sheets.exe') } : {}), args: [...(packaged ? [] : [resolve('.')]), `--user-data-dir=${join(directory, 'profile')}`, file] });
+const errors = [];
+try {
+  await app.evaluate(({ app, dialog }) => {
+    dialog.showMessageBox = async () => ({ response: 1 });
+    globalThis.outputReports = [];
+    app.on('web-contents-created', (_event, contents) => {
+      const pdf = contents.printToPDF.bind(contents);
+      contents.printToPDF = async (options) => {
+        globalThis.outputReports.push({ kind: 'pdf', options, text: await contents.executeJavaScript('document.body.innerText') });
+        return pdf(options);
+      };
+      contents.print = (options, callback) => { globalThis.outputReports.push({ kind: 'print', options }); callback(false, 'cancelled'); };
+    });
+  });
+  const page = await app.firstWindow(); page.setDefaultTimeout(15_000);
+  page.on('pageerror', (error) => errors.push(error.message));
+  const cell = (name) => page.getByRole('gridcell', { name, exact: true });
+  await cell('B2').filter({ hasText: 'Merged heading' }).waitFor();
+  const grid = page.getByRole('grid');
+  const separator = (name) => page.getByRole('separator', { name, exact: true });
+  const width = async (column) => Number(await separator(`Resize column ${column}`).getAttribute('aria-valuenow'));
+  const height = async (row) => Number(await separator(`Resize row ${row}`).getAttribute('aria-valuenow'));
+  async function select(from, to) {
+    await cell(from).click(); await grid.focus();
+    const destination = /^([A-Z]+)(\d+)$/u.exec(to);
+    const origin = /^([A-Z]+)(\d+)$/u.exec(from);
+    for (let i = 0; i < destination[1].charCodeAt(0) - origin[1].charCodeAt(0); i++) await page.keyboard.press('Shift+ArrowRight');
+    for (let i = 0; i < Number(destination[2]) - Number(origin[2]); i++) await page.keyboard.press('Shift+ArrowDown');
+  }
+  await select('B2', 'D4');
+  const oldB = await width('B'), oldC = await width('C'), oldD = await width('D');
+  const handle = await separator('Resize column C').boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2); await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + 32, handle.y + handle.height / 2, { steps: 8 }); await page.mouse.up();
+  assert.equal(await width('B'), oldC + 32); assert.equal(await width('C'), oldC + 32); assert.equal(await width('D'), oldC + 32);
+  await grid.focus(); await page.keyboard.press('Control+z');
+  await page.waitForFunction((expected) => document.querySelector('[aria-label="Resize column B"]').getAttribute('aria-valuenow') === String(expected), oldB);
+  assert.equal(await width('B'), oldB); assert.equal(await width('D'), oldD);
+  await page.keyboard.press('Control+y');
+  await separator('Resize row 3').focus(); await page.keyboard.press('ArrowDown');
+  assert.equal(await height(2), await height(3)); assert.equal(await height(3), await height(4));
+  await page.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  assert.equal(await cell('C3').count(), 0);
+  await grid.focus(); await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('.name-box').innerText(), 'E2');
+  await cell('B2').dblclick();
+  const editor = page.getByRole('textbox', { name: 'Edit B2', exact: true });
+  assert.ok((await editor.boundingBox()).width > await width('B') * 2);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Unmerge cells', exact: true }).click();
+  assert.equal(await cell('C3').count(), 1);
+  await select('B2', 'D2'); await page.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  await select('F3', 'F5'); await page.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  assert.equal(await cell('F4').count(), 0);
+  await select('A10', 'B10'); await page.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  const confirmation = page.getByRole('dialog', { name: 'Merge selected cells', exact: true });
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  assert.equal(await cell('B10').innerText(), 'Other');
+  await page.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  await confirmation.getByRole('button', { name: 'Merge cells', exact: true }).click();
+  await grid.focus(); await page.keyboard.press('Control+z');
+  assert.equal(await cell('B10').innerText(), 'Other');
+  const pdf = join(directory, 'workbook.pdf');
+  await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async (_owner, options) => { globalThis.pdfDialog = options; return { canceled: false, filePath: path }; }; }, pdf);
+  await page.getByRole('button', { name: 'Save as PDF', exact: true }).click();
+  const output = page.getByRole('dialog', { name: 'Save as PDF', exact: true });
+  await output.getByRole('combobox', { name: 'Print scope', exact: true }).selectOption('all');
+  await output.getByRole('button', { name: 'Save PDF…', exact: true }).click();
+  await page.getByText('Saved PDF copy: workbook.pdf', { exact: true }).waitFor();
+  const bytes = await readFile(pdf); assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
+  assert.ok((bytes.toString('latin1').match(/\/Type\s*\/Page\b/gu) ?? []).length > 2);
+  const report = await app.evaluate(() => globalThis.outputReports.find((entry) => entry.kind === 'pdf'));
+  assert.match(report.text, /END160/u); assert.match(report.text, /SECOND_SHEET_MARKER/u);
+  assert.equal(report.options.printBackground, true); assert.equal(report.options.landscape, true);
+  assert.equal(await page.getByText('Unsaved changes', { exact: true }).count(), 1);
+  assert.match(await page.evaluate(async () => { try { await window.spreadsheet.installUpdate(); return ''; } catch (error) { return error.message; } }), /Save all open workbooks/u);
+  await grid.focus(); await page.keyboard.press('Control+p');
+  const printDialog = page.getByRole('dialog', { name: 'Print workbook', exact: true });
+  await printDialog.getByRole('button', { name: 'Print…', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('.output-dialog'));
+  await page.getByRole('button', { name: 'Print workbook', exact: true }).waitFor({ state: 'visible' });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await app.evaluate(() => globalThis.outputReports.some((entry) => entry.kind === 'print'))) break;
+    await page.waitForTimeout(50);
+  }
+  const calls = await app.evaluate(() => globalThis.outputReports.filter((entry) => entry.kind === 'print'));
+  assert.equal(calls.length, 1); assert.equal(calls[0].options.silent, false);
+  const savedPath = join(directory, 'saved.xlsx');
+  await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedPath);
+  await grid.focus(); await page.keyboard.press('Control+Shift+s');
+  await page.getByText('Saved as saved.xlsx', { exact: true }).waitFor();
+  const saved = new ExcelJS.Workbook(); await saved.xlsx.readFile(savedPath);
+  assert.deepEqual(saved.worksheets[0].model.merges, ['B2:D2', 'F3:F5']);
+  assert.equal(saved.worksheets[0].getColumn('B').width, saved.worksheets[0].getColumn('D').width);
+  assert.deepEqual(errors, []);
+  await page.screenshot({ path: join(directory, 'layout.png') });
+  console.log('Selection resizing, merges, undo, PDF, and native print routing passed.');
+  console.log(directory);
+} finally { await app.close(); }

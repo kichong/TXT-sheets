@@ -7,6 +7,8 @@ import { findLaunchWorkbookPath } from './main/launch-files';
 import { AppUpdateManager } from './main/updater';
 import { exportWorkbook, formatForPath, importWorkbook } from './main/workbook-io';
 import { buildCompatibilityReportUrl } from './shared/compatibility-report';
+import { printWorkbook, renderWorkbookPdf } from './main/print-window';
+import type { WorkbookPrintRequest, WorkbookPrintResult } from './shared/types';
 import type { AppCommand, CompatibilityReportRequest, OpenResult, SaveResult, WorkbookDocument, WorkbookFormat } from './shared/types';
 
 interface FileWindow {
@@ -60,6 +62,8 @@ function createApplicationMenu(): void {
         { type: 'separator' },
         { label: 'Save', accelerator: 'Ctrl+S', click: () => sendCommand('save') },
         { label: 'Save As…', accelerator: 'Ctrl+Shift+S', click: () => sendCommand('save-as') },
+        { label: 'Save as PDF…', click: () => sendCommand('export-pdf') },
+        { label: 'Print…', accelerator: 'Ctrl+P', click: () => sendCommand('print') },
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -167,6 +171,12 @@ function validateCompatibilityReport(value: unknown): asserts value is Compatibi
   }
 }
 
+function validatePrintRequest(value: unknown): asserts value is WorkbookPrintRequest {
+  const request = value as Partial<WorkbookPrintRequest> | null;
+  if (!request || !['active', 'all'].includes(String(request.scope)) || typeof request.landscape !== 'boolean') throw new Error('The print settings were invalid.');
+  validateWorkbook(request.workbook);
+}
+
 function installIpcHandlers(): void {
   ipcMain.handle('workbooks:new', () => { createWindow(); });
   ipcMain.handle('workbooks:open', async (event) => {
@@ -207,6 +217,21 @@ function installIpcHandlers(): void {
   ipcMain.handle('workbooks:save-as', async (event, value: unknown) => {
     validateWorkbook(value);
     return saveToPathOrCancel(value, fileWindow(event));
+  });
+  ipcMain.handle('workbooks:export-pdf', async (event, value: unknown): Promise<WorkbookPrintResult> => {
+    validatePrintRequest(value);
+    const owner = fileWindow(event).window;
+    const title = value.workbook.title.replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '').trim() || 'Workbook';
+    const result = await dialog.showSaveDialog(owner, { title: 'Save as PDF', defaultPath: `${title}.pdf`, filters: [{ name: 'PDF document', extensions: ['pdf'] }] });
+    if (result.canceled || !result.filePath) return { status: 'canceled' };
+    const path = extname(result.filePath) ? result.filePath : `${result.filePath}.pdf`;
+    if (extname(path).toLowerCase() !== '.pdf') throw new Error('Choose a .pdf file name for the PDF copy.');
+    await storage.atomicWrite(path, await renderWorkbookPdf(value, owner));
+    return { status: 'saved', displayName: basename(path) };
+  });
+  ipcMain.handle('workbooks:print', async (event, value: unknown) => {
+    validatePrintRequest(value);
+    return printWorkbook(value, fileWindow(event).window);
   });
   ipcMain.handle('workbooks:report-compatibility', async (_event, value: unknown) => {
     validateCompatibilityReport(value);

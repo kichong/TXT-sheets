@@ -24,7 +24,9 @@ TXT Sheets follows the focused desktop design and release architecture of [TXT D
 - Drag to select ranges of cells, rows, and columns, with automatic scrolling at the grid edges
 - Right-click selections for clipboard actions, insert/delete rows or columns, shift cells, and clear contents
 - Direct cell editing, a formula bar, copy/cut/paste, undo/redo, and find
-- Drag-resizable rows and columns with dimensions preserved in Excel workbooks
+- Drag-resizable rows and columns; resizing within a selected range applies the same size to every selected row or column, with dimensions preserved in Excel workbooks
+- Merge selected cells horizontally, vertically, or as a rectangle, with confirmation before discarding contents; unmerge and undo are supported
+- Save as PDF and native printing for the current sheet or entire workbook, with portrait/landscape output fitted to one page wide
 - Row and column insertion/deletion
 - Bold, italic, underline, font size, text/fill color, wrapping, number formats, and alignment
 - Cell borders with all/outline/horizontal/vertical/bottom presets, line weights, dash patterns, and colors
@@ -77,7 +79,7 @@ A tagged release is validated and built on a clean Windows GitHub Actions runner
 2. Tag the commit with the matching version, such as `v0.2.0`.
 3. Push the tag. The **Release TXT Sheets** workflow validates, builds, and publishes the release.
 
-Installed builds check shortly after launch and every six hours. A user chooses **Download**, then **Restart to update**; an unsaved workbook blocks restart. The current Windows installer is not code-signed, so Windows SmartScreen may warn on the initial download.
+Installed builds check shortly after launch and every six hours. A user chooses **Download**, then **Restart to update**; the update installs silently and relaunches the app. An unsaved workbook in any window blocks restart. Versions before 0.2.13 still use their previous interactive updater for the transition to this version. The current Windows installer is not code-signed, so Windows SmartScreen may warn on the initial download.
 
 ## Contributing and security
 

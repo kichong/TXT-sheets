@@ -1,10 +1,12 @@
-import { observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
+import { defaultRangeExtractor, observeElementRect, useVirtualizer } from '@tanstack/react-virtual';
+import { resizedIndices } from './cell-layout';
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent, MouseEvent } from 'react';
 import type { CellData, SheetDocument } from '../shared/types';
 import type { FormulaEvaluator } from './formulas';
 import { listOptions } from '../shared/excel-features';
 import { conditionalStyle } from './conditional-formatting';
+import { displayValue } from '../shared/cell-display';
 import { addressForCell, cellKey, columnName, editableCellText, parseCellAddress } from './formulas';
 import type { Selection } from './workbook-model';
 import {
@@ -53,28 +55,7 @@ interface ResizeSession {
   startPosition: number;
   startSize: number;
   currentSize: number;
-}
-
-function displayNumber(value: number, format?: string): string {
-  if (!format || format === 'General') return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(12)));
-  const primaryFormat = format.split(';')[0];
-  const decimals = Math.min(6, (primaryFormat.split('.')[1]?.match(/[0#]/gu) ?? []).length);
-  if (format.includes('%')) return new Intl.NumberFormat(undefined, { style: 'percent', minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
-  if (format.includes('$')) return new Intl.NumberFormat(undefined, {
-    style: 'currency', currency: 'USD', currencySign: format.includes('(') ? 'accounting' : 'standard',
-    minimumFractionDigits: decimals, maximumFractionDigits: decimals,
-  }).format(value);
-  return new Intl.NumberFormat(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(value);
-}
-
-function displayValue(cell: CellData | undefined, evaluated: ReturnType<FormulaEvaluator['evaluateCell']>): string {
-  const value = cell?.formula ? evaluated : cell?.value;
-  if (value === null || value === undefined) return '';
-  if (cell?.valueType === 'date' && typeof value === 'string') {
-    const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? value : date.toLocaleDateString(undefined, { timeZone: 'UTC' });
-  }
-  return typeof value === 'number' ? displayNumber(value, cell?.style?.numberFormat) : String(value);
+  moved?: boolean;
 }
 
 function styleForCell(cell: CellData | undefined): CSSProperties {
@@ -115,6 +96,14 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
   const fillTarget = useRef<Selection | null>(null);
   const resizing = useRef<ResizeSession | null>(null);
   const bounds = selectionBounds(selection);
+  const mergeRangeExtractor = (axis: 'row' | 'column') => (range: Parameters<typeof defaultRangeExtractor>[0]) => {
+    const indices = new Set(defaultRangeExtractor(range));
+    for (const merge of sheet.merges) {
+      const [first, last] = merge.split(':').map(parseCellAddress);
+      if (first && last && first[axis] < range.startIndex && last[axis] >= range.startIndex) indices.add(first[axis]);
+    }
+    return [...indices].sort((a, b) => a - b);
+  };
 
   const rowVirtualizer = useVirtualizer({
     count: sheet.rowCount,
@@ -122,6 +111,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     observeElementRect: observeGridRect,
     estimateSize: (index) => sheet.rowHeights[String(index)] ?? DEFAULT_ROW_HEIGHT,
     overscan: 8,
+    rangeExtractor: mergeRangeExtractor('row'),
     // Cell coordinates include the header; reserve its space at the trailing
     // edge so auto alignment reveals the whole cell beneath the pinned header.
     paddingEnd: COLUMN_HEADER_HEIGHT,
@@ -134,6 +124,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     observeElementRect: observeGridRect,
     estimateSize: (index) => sheet.columnWidths[String(index)] ?? DEFAULT_COLUMN_WIDTH,
     overscan: 5,
+    rangeExtractor: mergeRangeExtractor('column'),
     paddingEnd: ROW_HEADER_WIDTH,
     scrollPaddingEnd: ROW_HEADER_WIDTH,
   });
@@ -289,9 +280,12 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     const pointerPosition = session.axis === 'column' ? event.clientX : event.clientY;
     const nextSize = clampSize(session.axis, session.startSize + pointerPosition - session.startPosition);
     if (nextSize === session.currentSize) return;
+    session.moved = true;
     session.currentSize = nextSize;
-    if (session.axis === 'column') columnVirtualizer.resizeItem(session.index, nextSize);
-    else rowVirtualizer.resizeItem(session.index, nextSize);
+    for (const index of resizedIndices(selection, session.axis, session.index)) {
+      if (session.axis === 'column') columnVirtualizer.resizeItem(index, nextSize);
+      else rowVirtualizer.resizeItem(index, nextSize);
+    }
   };
 
   const finishResize = (event: PointerEvent<HTMLSpanElement>) => {
@@ -301,7 +295,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
     event.stopPropagation();
     resizing.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (session.currentSize === session.startSize) return;
+    if (!session.moved) return;
     if (session.axis === 'column') onColumnResize(session.index, session.currentSize);
     else onRowResize(session.index, session.currentSize);
   };
@@ -323,6 +317,9 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
   const columns = columnVirtualizer.getVirtualItems();
   const editorRow = rows.find((item) => item.index === selection.focus.row);
   const editorColumn = columns.find((item) => item.index === selection.focus.column);
+  const editorMerge = mergeMap.get(cellKey(selection.focus.row, selection.focus.column));
+  const editorWidth = editorMerge ? Array.from({ length: editorMerge.endColumn - editorMerge.masterColumn + 1 }, (_, offset) => sheet.columnWidths[String(editorMerge.masterColumn + offset)] ?? DEFAULT_COLUMN_WIDTH).reduce((sum, size) => sum + size, 0) : editorColumn?.size;
+  const editorHeight = editorMerge ? Array.from({ length: editorMerge.endRow - editorMerge.masterRow + 1 }, (_, offset) => sheet.rowHeights[String(editorMerge.masterRow + offset)] ?? DEFAULT_ROW_HEIGHT).reduce((sum, size) => sum + size, 0) : editorRow?.size;
 
   return (
     <div
@@ -504,8 +501,8 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
             autoFocus
             className="cell-editor"
             style={{
-              width: editorColumn.size,
-              height: editorRow.size,
+              width: editorWidth,
+              height: editorHeight,
               transform: `translate(${ROW_HEADER_WIDTH + editorColumn.start}px, ${COLUMN_HEADER_HEIGHT + editorRow.start}px)`,
             }}
             value={editValue}

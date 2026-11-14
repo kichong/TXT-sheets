@@ -498,6 +498,10 @@ select:focus-visible,
 .sheet-rename-dialog label { display: block; margin-bottom: 6px; }
 .sheet-rename-dialog input { width: 100%; padding: 8px; color: var(--text); background: var(--cell); border: 1px solid var(--border-strong); border-radius: 4px; }
 .sheet-rename-dialog p { font-size: 12px; }
+.dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.dialog-actions button { padding:7px 12px; border:1px solid var(--border-strong); border-radius:5px; color:var(--text); background:var(--chrome); cursor:pointer; }
+.dialog-actions button:last-child { color:var(--chrome); background:var(--accent-strong); border-color:var(--accent-strong); }
+.output-dialog select { display:block; width:100%; padding:7px; margin:5px 0 12px; color:var(--text); background:var(--cell); border:1px solid var(--border-strong); border-radius:4px; }
 .sheet-rename-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .sheet-rename-actions button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--chrome-muted); cursor: pointer; }
 .sheet-rename-actions button[type="submit"] { background: var(--accent-soft); color: var(--accent-strong); }

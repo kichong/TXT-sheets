@@ -119,7 +119,18 @@ export interface AppUpdateState {
   message?: string;
 }
 
-export type AppCommand = 'new' | 'open' | 'save' | 'save-as' | 'save-and-close' | 'undo' | 'redo' | 'find';
+export type AppCommand = 'new' | 'open' | 'save' | 'save-as' | 'save-and-close' | 'undo' | 'redo' | 'find' | 'print' | 'export-pdf';
+
+export interface WorkbookPrintRequest {
+  workbook: WorkbookDocument;
+  scope: 'active' | 'all';
+  landscape: boolean;
+}
+
+export interface WorkbookPrintResult {
+  status: 'saved' | 'printed' | 'canceled';
+  displayName?: string;
+}
 
 export interface SpreadsheetApi {
   newWindow(): Promise<void>;
@@ -129,6 +140,8 @@ export interface SpreadsheetApi {
   openRecent(id: string): Promise<OpenResult | null>;
   save(workbook: WorkbookDocument): Promise<SaveResult>;
   saveAs(workbook: WorkbookDocument): Promise<SaveResult>;
+  exportPdf(request: WorkbookPrintRequest): Promise<WorkbookPrintResult>;
+  printWorkbook(request: WorkbookPrintRequest): Promise<WorkbookPrintResult>;
   reportCompatibility(request: CompatibilityReportRequest): Promise<void>;
   getRecentFiles(): Promise<RecentFile[]>;
   getRecovery(): Promise<WorkbookDocument | null>;

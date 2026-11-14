@@ -1,7 +1,7 @@
 import {
   AlignCenter, AlignLeft, AlignRight, Bold, Bug, ChevronDown, ChevronLeft, ChevronRight,
   CircleAlert, Columns3, Download, FilePlus2, FolderOpen, FunctionSquare, Italic, Moon, Plus,
-  Redo2, RefreshCw, Rows3, Save, Search, Settings2, Sigma, Sun, Trash2, Underline, Undo2, X, Grid2X2, WrapText,
+  Redo2, RefreshCw, Rows3, Save, Search, Settings2, Sigma, Sun, Trash2, Underline, Undo2, X, Grid2X2, WrapText, Merge, Split, FileDown, Printer,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -13,6 +13,7 @@ import { GridContextMenu, type GridMenuTarget, type GridMenuItem } from './GridC
 import { SheetTabMenu, type SheetMenuTarget } from './SheetTabMenu';
 import { renameWorksheet, reorderWorksheet } from './sheet-actions';
 import { SpreadsheetGrid } from './SpreadsheetGrid';
+import { mergeProblem, mergeSelection, unmergeSelection, resizeSelection, nextGridPoint } from './cell-layout';
 import {
   addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
 } from './formulas';
@@ -69,6 +70,15 @@ export function App() {
   const draggedSheetId = useRef<string | null>(null);
   const [structureMenuOpen, setStructureMenuOpen] = useState(false);
   const [bordersOpen, setBordersOpen] = useState(false);
+  const [mergePending, setMergePending] = useState<Selection | null>(null);
+  const [outputMode, setOutputMode] = useState<'pdf' | 'print' | null>(null);
+  const [outputScope, setOutputScope] = useState<'active' | 'all'>('active');
+  const [landscape, setLandscape] = useState(true);
+  const [printing, setPrinting] = useState(false);
+  const outputDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (outputMode) outputDialog.current?.showModal(); }, [outputMode]);
+  const mergeDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (mergePending) mergeDialog.current?.showModal(); }, [mergePending]);
   const borderAnchor = useRef<HTMLDivElement>(null);
   const [borderPosition, setBorderPosition] = useState({ left: 0, top: 0 });
   const [borderColor, setBorderColor] = useState('#94a3b8');
@@ -238,6 +248,20 @@ export function App() {
     } catch (error) { handleError(error); }
   }, [handleError, workbook.compatibilityIssues, workbook.source?.format]);
 
+  const outputWorkbook = async (mode: 'pdf' | 'print') => {
+    if (printing) return;
+    setOutputMode(null); setPrinting(true);
+    try {
+      const snapshot = cloneWorkbook(workbook);
+      if (editing) setCellInput(snapshot.sheets.find((sheet) => sheet.id === snapshot.activeSheetId)!, selection.focus.row, selection.focus.column, editValue);
+      const request = { workbook: workbookWithFormulaResults(snapshot), scope: outputScope, landscape };
+      const result = await (mode === 'pdf' ? window.spreadsheet.exportPdf(request) : window.spreadsheet.printWorkbook(request));
+      if (result.status === 'saved') setMessage(`Saved PDF copy: ${result.displayName}`);
+      if (result.status === 'printed') setMessage('Sent to printer.');
+    } catch (error) { handleError(error); }
+    finally { setPrinting(false); gridRef.current?.focus({ preventScroll: true }); }
+  };
+
   const newWorkbook = useCallback(() => {
     void window.spreadsheet.newWindow().catch(handleError);
   }, [handleError]);
@@ -247,11 +271,13 @@ export function App() {
     if (command === 'open') void openWorkbook();
     if (command === 'save') void saveWorkbook(false);
     if (command === 'save-as') void saveWorkbook(true);
+    if (command === 'print' && !printing) setOutputMode('print');
+    if (command === 'export-pdf' && !printing) setOutputMode('pdf');
     if (command === 'save-and-close') void saveWorkbook(false, true);
     if (command === 'undo') undo();
     if (command === 'redo') redo();
     if (command === 'find') { setFindOpen(true); requestAnimationFrame(() => findRef.current?.focus()); }
-  }, [newWorkbook, openWorkbook, redo, saveWorkbook, undo]);
+  }, [newWorkbook, openWorkbook, printing, redo, saveWorkbook, undo]);
 
   useEffect(() => {
     void window.spreadsheet.getRecentFiles().then(setRecentFiles).catch(handleError);
@@ -330,14 +356,11 @@ export function App() {
     }
     setEditing(false);
     if (move) {
-      const focus = {
-        row: Math.min(activeSheet.rowCount - 1, point.row + (move === 'down' ? 1 : 0)),
-        column: Math.min(activeSheet.columnCount - 1, point.column + (move === 'right' ? 1 : 0)),
-      };
+      const focus = nextGridPoint(activeSheet, point, move === 'down' ? 1 : 0, move === 'right' ? 1 : 0);
       setSelection({ anchor: focus, focus });
       requestAnimationFrame(() => gridRef.current?.focus());
     }
-  }, [activeCell, activeSheet.columnCount, activeSheet.rowCount, commit, editValue, editing, selection.focus]);
+  }, [activeCell, activeSheet, commit, editValue, editing, selection.focus]);
 
   const cancelEdit = useCallback(() => {
     latestEdit.current = { ...latestEdit.current, editing: false };
@@ -400,6 +423,20 @@ export function App() {
   }, [activeSheet.columnCount, activeSheet.rowCount, commit, handleError, selection]);
 
   const closeGridMenu = () => { setGridMenu(null); gridRef.current?.focus({ preventScroll: true }); };
+  const finishMerge = (range: Selection, allowDiscard = false) => {
+    const bounds = selectionBounds(range);
+    commit((draft) => mergeSelection(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, range, allowDiscard));
+    setMergePending(null);
+    setSelection({ anchor: { row: bounds.top, column: bounds.left }, focus: { row: bounds.top, column: bounds.left } });
+    gridRef.current?.focus({ preventScroll: true });
+  };
+  const requestMerge = () => {
+    const problem = mergeProblem(activeSheet, selection);
+    if (problem.error) { setMessage(problem.error); return; }
+    if (problem.discardsContent) setMergePending(structuredClone(selection));
+    else finishMerge(selection);
+  };
+  const unmerge = () => { commit((draft) => unmergeSelection(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection)); gridRef.current?.focus(); };
   const changeSelectedStructure = (axis: 'row' | 'column', delta: 1 | -1, after = false) => {
     const bounds = selectionBounds(selection);
     const first = axis === 'row' ? bounds.top : bounds.left;
@@ -424,6 +461,8 @@ export function App() {
     { label: 'Cut', shortcut: 'Ctrl+X', action: () => { void copySelection(true); } },
     { label: 'Copy', shortcut: 'Ctrl+C', action: () => { void copySelection(); } },
     { label: 'Paste', shortcut: 'Ctrl+V', action: () => { void pasteSelection(); } },
+    { label: 'Merge cells', action: requestMerge },
+    { label: 'Unmerge cells', action: unmerge },
     null,
     ...(selection.kind !== 'columns' ? [
       { label: 'Insert rows above', action: () => changeSelectedStructure('row', 1) },
@@ -458,6 +497,7 @@ export function App() {
     if (shortcut && key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
     if (shortcut && key === 'y') { event.preventDefault(); redo(); return; }
     if (shortcut && key === 's') { event.preventDefault(); void saveWorkbook(event.shiftKey); return; }
+    if (shortcut && key === 'p') { event.preventDefault(); if (!printing) setOutputMode('print'); return; }
     if (shortcut && key === 'o') { event.preventDefault(); void openWorkbook(); return; }
     if (shortcut && key === 'n') { event.preventDefault(); newWorkbook(); return; }
     if (shortcut && key === 'f') { event.preventDefault(); setFindOpen(true); requestAnimationFrame(() => findRef.current?.focus()); return; }
@@ -466,10 +506,7 @@ export function App() {
     if (event.key === 'F2') { event.preventDefault(); startEdit(); return; }
     if (event.key === 'Enter' || event.key === 'Tab') {
       event.preventDefault();
-      const focus = {
-        row: Math.max(0, Math.min(activeSheet.rowCount - 1, selection.focus.row + (event.key === 'Enter' ? (event.shiftKey ? -1 : 1) : 0))),
-        column: Math.max(0, Math.min(activeSheet.columnCount - 1, selection.focus.column + (event.key === 'Tab' ? (event.shiftKey ? -1 : 1) : 0))),
-      };
+      const focus = nextGridPoint(activeSheet, selection.focus, event.key === 'Enter' ? (event.shiftKey ? -1 : 1) : 0, event.key === 'Tab' ? (event.shiftKey ? -1 : 1) : 0);
       setSelection({ anchor: focus, focus });
       return;
     }
@@ -477,15 +514,12 @@ export function App() {
     if (movement[event.key]) {
       event.preventDefault();
       const [rowDelta, columnDelta] = movement[event.key];
-      const focus = {
-        row: Math.max(0, Math.min(activeSheet.rowCount - 1, selection.focus.row + rowDelta)),
-        column: Math.max(0, Math.min(activeSheet.columnCount - 1, selection.focus.column + columnDelta)),
-      };
+      const focus = event.shiftKey ? { row: Math.max(0, Math.min(activeSheet.rowCount - 1, selection.focus.row + rowDelta)), column: Math.max(0, Math.min(activeSheet.columnCount - 1, selection.focus.column + columnDelta)) } : nextGridPoint(activeSheet, selection.focus, rowDelta, columnDelta);
       setSelection({ anchor: event.shiftKey ? selection.anchor : focus, focus });
       return;
     }
     if (!shortcut && !event.altKey && event.key.length === 1) { event.preventDefault(); startEdit(event.key); }
-  }, [activeSheet.columnCount, activeSheet.rowCount, clearSelection, copySelection, editing, newWorkbook, openWorkbook, pasteSelection, redo, saveWorkbook, selection.anchor, selection.focus, startEdit, undo]);
+  }, [activeSheet, clearSelection, copySelection, editing, newWorkbook, openWorkbook, pasteSelection, printing, redo, saveWorkbook, selection.anchor, selection.focus, startEdit, undo]);
 
   const formatSelection = useCallback((style: Partial<CellStyle>) => {
     commit((draft) => applyStyle(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection, style));
@@ -646,6 +680,8 @@ export function App() {
                   <button onClick={() => { void openWorkbook(); setFileMenuOpen(false); }}><FolderOpen size={15} /> Open… <kbd>Ctrl O</kbd></button>
                   <button onClick={() => { void saveWorkbook(false); setFileMenuOpen(false); }}><Save size={15} /> Save <kbd>Ctrl S</kbd></button>
                   <button onClick={() => { void saveWorkbook(true); setFileMenuOpen(false); }}><Save size={15} /> Save as…</button>
+                  <button onClick={() => { setOutputMode('pdf'); setFileMenuOpen(false); }}><FileDown size={15} /> Save as PDF…</button>
+                  <button onClick={() => { setOutputMode('print'); setFileMenuOpen(false); }}><Printer size={15} /> Print… <kbd>Ctrl P</kbd></button>
                   {recentFiles.length ? <div className="menu-label">Recent</div> : null}
                   {recentFiles.slice(0, 5).map((file) => (
                     <button key={file.id} onClick={() => { void window.spreadsheet.openRecent(file.id).then(openResult).catch(handleError); setFileMenuOpen(false); }}>
@@ -656,6 +692,8 @@ export function App() {
               ) : null}
             </div>
             <IconButton label="Save" disabled={saving} onClick={() => void saveWorkbook(false)}><Save size={16} /></IconButton>
+            <IconButton label="Save as PDF" disabled={printing} onClick={() => setOutputMode('pdf')}><FileDown size={16} /></IconButton>
+            <IconButton label="Print workbook" disabled={printing} onClick={() => setOutputMode('print')}><Printer size={16} /></IconButton>
           </div>
           <div className="tool-group">
             <IconButton label="Undo" disabled={!history.past.length} onClick={undo}><Undo2 size={16} /></IconButton>
@@ -671,6 +709,8 @@ export function App() {
               {[...new Set([10, 11, 12, 14, 16, 18, 21, selectedStyle.fontSize ?? 11])].sort((a, b) => a - b).map((size) => <option key={size} value={size}>{size}</option>)}
             </select>
             <IconButton label="Wrap text" active={selectedStyle.wrapText} onClick={() => formatSelection({ wrapText: !selectedStyle.wrapText })}><WrapText size={16} /></IconButton>
+            <IconButton label="Merge cells" onClick={requestMerge}><Merge size={16} /></IconButton>
+            <IconButton label="Unmerge cells" onClick={unmerge}><Split size={16} /></IconButton>
             <div className="menu-anchor" ref={borderAnchor}>
               <IconButton label="Cell borders" active={bordersOpen} onClick={() => {
                 const rect = borderAnchor.current!.getBoundingClientRect();
@@ -742,6 +782,19 @@ export function App() {
       ) : null}
 
       {gridMenu && <GridContextMenu target={gridMenu} items={gridMenuItems} onClose={closeGridMenu} />}
+      {mergePending && <dialog ref={mergeDialog} className="sheet-rename-dialog" aria-label="Merge selected cells" onCancel={() => setMergePending(null)}>
+        <h2>Merge selected cells?</h2><p>Only the upper-left cell’s contents and notes will remain. Other selected contents, notes, and dropdown rules will be removed. You can undo this change.</p>
+        <div className="dialog-actions"><button onClick={() => { setMergePending(null); gridRef.current?.focus(); }}>Cancel</button><button onClick={() => finishMerge(mergePending, true)}>Merge cells</button></div>
+      </dialog>}
+      {outputMode && <dialog ref={outputDialog} className="sheet-rename-dialog output-dialog" aria-label={outputMode === 'pdf' ? 'Save as PDF' : 'Print workbook'} onCancel={() => setOutputMode(null)}>
+        <form onSubmit={(event) => { event.preventDefault(); void outputWorkbook(outputMode); }}>
+          <h2>{outputMode === 'pdf' ? 'Save as PDF' : 'Print workbook'}</h2>
+          <label>Include<select aria-label="Print scope" value={outputScope} onChange={(event) => setOutputScope(event.target.value as 'active' | 'all')}><option value="active">Current sheet</option><option value="all">Entire workbook</option></select></label>
+          <label>Orientation<select aria-label="Page orientation" value={landscape ? 'landscape' : 'portrait'} onChange={(event) => setLandscape(event.target.value === 'landscape')}><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></label>
+          <p>Sheets fit to one page wide and continue onto additional pages as needed. Your editable workbook stays unchanged.</p>
+          <div className="dialog-actions"><button type="button" onClick={() => { setOutputMode(null); gridRef.current?.focus(); }}>Cancel</button><button type="submit">{outputMode === 'pdf' ? 'Save PDF…' : 'Print…'}</button></div>
+        </form>
+      </dialog>}
       <section className="workspace">
         <SpreadsheetGrid
           ref={gridRef}
@@ -760,8 +813,8 @@ export function App() {
           onFillSelection={fillSelectedCells}
           onPickFormulaReference={pickFormulaReference}
           referencePicking={editing && editValue.trimStart().startsWith('=')}
-          onColumnResize={(column, width) => commit((draft) => resizeColumn(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, column, width))}
-          onRowResize={(row, height) => commit((draft) => resizeRow(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, row, height))}
+          onColumnResize={(column, width) => commit((draft) => resizeSelection(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection, 'column', column, width))}
+          onRowResize={(row, height) => commit((draft) => resizeSelection(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection, 'row', row, height))}
           onKeyDown={gridKeyDown}
         />
         {compatibilityOpen && workbook.compatibilityIssues.length ? (

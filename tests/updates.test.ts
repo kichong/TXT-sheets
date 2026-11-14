@@ -18,7 +18,7 @@ it('requires explicit installation and keeps normal quit from installing a downl
   (downloaded as (info: { version: string }) => void)({ version: '0.2.8' });
   expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
   manager.installUpdate();
-  expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+  expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(true, true);
 });
 
 describe('update presentation', () => {

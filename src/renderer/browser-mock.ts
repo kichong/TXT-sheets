@@ -12,6 +12,8 @@ if (!window.spreadsheet) {
     save: async () => ({ status: 'saved', source: { id: 'browser-preview', displayName: 'Untitled workbook.xlsx', format: 'xlsx' }, recentFiles: [] }),
     saveAs: async () => ({ status: 'saved', source: { id: 'browser-preview', displayName: 'Untitled workbook.xlsx', format: 'xlsx' }, recentFiles: [] }),
     reportCompatibility: async () => undefined,
+    exportPdf: async () => { throw new Error('PDF export is available in the Windows app.'); },
+    printWorkbook: async () => { throw new Error('Printing is available in the Windows app.'); },
     getRecentFiles: async () => [],
     getRecovery: async () => null,
     writeRecovery: async () => undefined,
