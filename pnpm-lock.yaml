@@ -8,7 +8,7 @@ overrides:
   uuid: 11.1.1
 
 patchedDependencies:
-  exceljs@4.4.0: 485f94bc5557fd37f25d9e982778b246b082478f92c4ec19420a9e855a070b3e
+  exceljs@4.4.0: 4bfae51d8bdac03c04f414821320e34178e8c090b6186a67ca7a18af2b25b414
 
 importers:
 
@@ -22,7 +22,7 @@ importers:
         version: 6.8.9(supports-color@8.1.1)
       exceljs:
         specifier: ^4.4.0
-        version: 4.4.0(patch_hash=485f94bc5557fd37f25d9e982778b246b082478f92c4ec19420a9e855a070b3e)
+        version: 4.4.0(patch_hash=4bfae51d8bdac03c04f414821320e34178e8c090b6186a67ca7a18af2b25b414)
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
@@ -3830,7 +3830,7 @@ snapshots:
     dependencies:
       '@types/estree': 1.0.9
 
-  exceljs@4.4.0(patch_hash=485f94bc5557fd37f25d9e982778b246b082478f92c4ec19420a9e855a070b3e):
+  exceljs@4.4.0(patch_hash=4bfae51d8bdac03c04f414821320e34178e8c090b6186a67ca7a18af2b25b414):
     dependencies:
       archiver: 5.3.2
       dayjs: 1.11.21

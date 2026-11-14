@@ -1,12 +1,13 @@
 import {
   AlignCenter, AlignLeft, AlignRight, Bold, Bug, ChevronDown, ChevronLeft, ChevronRight,
   CircleAlert, Columns3, Download, FilePlus2, FolderOpen, FunctionSquare, Italic, Moon, Plus,
-  Redo2, RefreshCw, Rows3, Save, Search, Settings2, Sigma, Sun, Trash2, Underline, Undo2, X,
+  Redo2, RefreshCw, Rows3, Save, Search, Settings2, Sigma, Sun, Trash2, Underline, Undo2, X, Grid2X2, WrapText,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { KeyboardEvent } from 'react';
 import { createBlankWorkbook } from '../shared/types';
-import type { AppCommand, AppUpdateState, CellStyle, RecentFile, WorkbookDocument } from '../shared/types';
+import type { AppCommand, AppUpdateState, CellBorderSide, CellStyle, RecentFile, WorkbookDocument } from '../shared/types';
 import { presentUpdate, type UpdateAction } from '../shared/updates';
 import { GridContextMenu, type GridMenuTarget, type GridMenuItem } from './GridContextMenu';
 import { SheetTabMenu, type SheetMenuTarget } from './SheetTabMenu';
@@ -16,7 +17,7 @@ import {
   addressForCell, cellKey, createFormulaEvaluator, editableCellText, isDateNumberFormat, normalizeCellInput,
 } from './formulas';
 import {
-  applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, setCellInput, selectedCells,
+  applyBorders, applyStyle, cloneWorkbook, deleteColumn, deleteRow, fillSelection, insertColumn, insertRow, setCellInput, selectedCells,
   resizeColumn, resizeRow, selectionBounds, selectionLabel, uniqueSheetName, cellShiftProblem, shiftSelectedCells,
 } from './workbook-model';
 import type { Selection } from './workbook-model';
@@ -67,6 +68,27 @@ export function App() {
   const [sheetDrop, setSheetDrop] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
   const draggedSheetId = useRef<string | null>(null);
   const [structureMenuOpen, setStructureMenuOpen] = useState(false);
+  const [bordersOpen, setBordersOpen] = useState(false);
+  const borderAnchor = useRef<HTMLDivElement>(null);
+  const [borderPosition, setBorderPosition] = useState({ left: 0, top: 0 });
+  const [borderColor, setBorderColor] = useState('#94a3b8');
+  const [borderStyle, setBorderStyle] = useState<CellBorderSide['style']>('thin');
+  useEffect(() => {
+    if (!bordersOpen) return;
+    document.querySelector<HTMLSelectElement>('.border-menu select')?.focus();
+    const outside = (event: PointerEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.border-menu') && !borderAnchor.current?.contains(target)) setBordersOpen(false);
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') { setBordersOpen(false); borderAnchor.current?.querySelector('button')?.focus(); }
+    };
+    const close = () => setBordersOpen(false);
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    window.addEventListener('resize', close);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); window.removeEventListener('resize', close); };
+  }, [bordersOpen]);
   const [compatibilityOpen, setCompatibilityOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState('');
@@ -335,7 +357,7 @@ export function App() {
       Object.entries(sheet.cells).forEach(([key, cell]) => {
         const [row, column] = key.split(':').map(Number);
         if (row < bounds.top || row > bounds.bottom || column < bounds.left || column > bounds.right) return;
-        if (cell?.style) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(cell.style) };
+        if (cell.style || cell.note !== undefined || cell.validation) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(cell.style), note: cell.note, validation: structuredClone(cell.validation) };
         else delete sheet.cells[key];
       });
     });
@@ -645,6 +667,27 @@ export function App() {
             <IconButton label="Underline" active={selectedStyle.underline} onClick={() => formatSelection({ underline: !selectedStyle.underline })}><Underline size={16} /></IconButton>
             <label className="color-control" title="Text color"><span>A</span><input aria-label="Text color" type="color" value={selectedStyle.textColor ?? '#202124'} onChange={(event) => formatSelection({ textColor: event.target.value })} /></label>
             <label className="color-control fill-control" title="Fill color"><span /><input aria-label="Fill color" type="color" value={selectedStyle.fillColor ?? '#fff4be'} onChange={(event) => formatSelection({ fillColor: event.target.value })} /></label>
+            <select aria-label="Font size" value={selectedStyle.fontSize ?? 11} onChange={(event) => formatSelection({ fontSize: Number(event.target.value) })}>
+              {[...new Set([10, 11, 12, 14, 16, 18, 21, selectedStyle.fontSize ?? 11])].sort((a, b) => a - b).map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+            <IconButton label="Wrap text" active={selectedStyle.wrapText} onClick={() => formatSelection({ wrapText: !selectedStyle.wrapText })}><WrapText size={16} /></IconButton>
+            <div className="menu-anchor" ref={borderAnchor}>
+              <IconButton label="Cell borders" active={bordersOpen} onClick={() => {
+                const rect = borderAnchor.current!.getBoundingClientRect();
+                setBorderPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)), top: rect.bottom + 7 });
+                setBordersOpen((open) => !open);
+              }}><Grid2X2 size={16} /></IconButton>
+              {bordersOpen ? createPortal(<div className="popover border-menu" role="dialog" aria-label="Cell borders" style={{ position: 'fixed', ...borderPosition }} onKeyDown={(event) => { if (event.key === 'Escape') { setBordersOpen(false); gridRef.current?.focus(); } }}>
+                <label>Line style<select aria-label="Border line style" value={borderStyle} onChange={(event) => setBorderStyle(event.target.value as CellBorderSide['style'])}>
+                  <option value="thin">Thin</option><option value="medium">Medium</option><option value="thick">Thick</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option><option value="double">Double</option>
+                </select></label>
+                <label>Line color<input type="color" aria-label="Border color" value={borderColor} onChange={(event) => setBorderColor(event.target.value)} /></label>
+                {(['all', 'outside', 'horizontal', 'vertical', 'bottom', 'none'] as const).map((preset) => <button key={preset} onClick={() => {
+                  commit((draft) => applyBorders(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, selection, preset, { style: borderStyle, color: borderColor }));
+                  setBordersOpen(false); gridRef.current?.focus({ preventScroll: true });
+                }}>{({ all: 'All borders', outside: 'Outside border', horizontal: 'Horizontal lines', vertical: 'Vertical lines', bottom: 'Bottom border', none: 'No borders' })[preset]}</button>)}
+              </div>, document.body) : null}
+            </div>
           </div>
           <div className="tool-group">
             <select aria-label="Number format" value={numberFormat} onChange={(event) => applyNumberFormat(event.target.value)}>
@@ -708,6 +751,7 @@ export function App() {
           editing={editing}
           editValue={editValue}
           onEditValueChange={setEditValue}
+          onCellValueChange={(row, column, value) => { commit((draft) => setCellInput(draft.sheets.find((sheet) => sheet.id === draft.activeSheetId)!, row, column, value)); setEditing(false); }}
           onCommitEdit={commitEdit}
           onCancelEdit={cancelEdit}
           onStartEdit={startEdit}

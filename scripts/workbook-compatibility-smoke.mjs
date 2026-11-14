@@ -23,6 +23,16 @@ sheet.getCell('C2').value = { formula: 'COUNTIFS(A4:A5,"Done")', result: 99 };
 sheet.getCell('B4').value = 'First line\nSecond line';
 sheet.getCell('B4').alignment = { wrapText: true };
 sheet.getRow(4).height = 40;
+sheet.addTable({ name: 'StatusTable', ref: 'A8', headerRow: true,
+  columns: [{ name: 'Status' }, { name: 'Description' }, { name: 'Progress' }], rows: [['Draft', 'First action', 0.5], ['Done', 'Second action', 1], ['Not filed', 'Third action', 0]],
+  style: { theme: 'TableStyleMedium2', showRowStripes: true } });
+sheet.getColumn('A').width = 18;
+for (let row = 9; row <= 11; row++) sheet.getCell(`A${row}`).dataValidation = { type: 'list', formulae: ['"Draft,Done,Not filed,Filed"'] };
+sheet.getCell('C6').value = { formula: 'COUNTIFS(A9:A11,"Done")', result: 1 };
+sheet.addConditionalFormatting({ ref: 'A9:A11', rules: [
+  { type: 'containsText', text: 'Done', operator: 'containsText', priority: 1, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } }, font: { color: { argb: 'FF166534' }, bold: true } } },
+  { type: 'expression', formulae: ['$A9="Not filed"'], priority: 2, style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE4E6' } } } },
+] });
 await excel.xlsx.writeFile(input);
 
 const packaged = process.argv.includes('--packaged');
@@ -33,6 +43,7 @@ const app = await electron.launch({
 const errors = [];
 try {
   const page = await app.firstWindow();
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
   page.on('pageerror', (error) => errors.push(error.message));
   const cell = (address) => page.getByRole('gridcell', { name: address, exact: true });
   await cell('A2').filter({ hasText: 'A heading' }).waitFor();
@@ -52,10 +63,37 @@ try {
   await page.getByRole('grid').focus();
   await page.keyboard.press('Control+z');
   assert.equal(await cell('C2').innerText(), '1');
+  assert.equal(await page.getByRole('button', { name: /Compatibility/ }).count(), 0);
+  assert.equal(await cell('A10').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(220, 252, 231)');
+  assert.equal(await cell('A11').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 228, 230)');
+  await page.getByRole('combobox', { name: 'Choose value for A9', exact: true }).selectOption('Done');
+  assert.equal(await cell('C6').innerText(), '2');
+  assert.equal(await cell('A9').evaluate((node) => getComputedStyle(node).color), 'rgb(22, 101, 52)');
+  await page.keyboard.press('Delete');
+  assert.equal(await page.getByRole('combobox', { name: 'Choose value for A9', exact: true }).count(), 1);
+  await page.keyboard.press('Control+z');
+  assert.equal(await cell('C6').innerText(), '2');
+  await cell('B9').click();
+  await page.keyboard.press('Shift+ArrowRight');
+  await page.keyboard.press('Shift+ArrowDown');
+  await page.getByRole('button', { name: 'Cell borders', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Border line style', exact: true }).selectOption('dashed');
+  await page.getByRole('button', { name: 'All borders', exact: true }).click();
+  assert.equal(await cell('B9').evaluate((node) => getComputedStyle(node).borderBottomStyle), 'dashed');
+  await page.keyboard.press('Control+z');
+  assert.notEqual(await cell('B9').evaluate((node) => getComputedStyle(node).borderBottomStyle), 'dashed');
+  await page.keyboard.press('Control+y');
+  await page.getByRole('combobox', { name: 'Font size', exact: true }).selectOption('14');
+  await page.getByRole('button', { name: 'Wrap text', exact: true }).click();
+  assert.equal(await cell('B9').evaluate((node) => getComputedStyle(node).whiteSpace), 'pre-wrap');
+  await page.getByRole('button', { name: 'Use dark theme', exact: true }).click();
+  await page.screenshot({ path: join(directory, 'render-dark.png') });
+  await page.getByRole('button', { name: 'Use light theme', exact: true }).click();
   await page.screenshot({ path: join(directory, 'render.png') });
   await app.evaluate(({ dialog }, filePath) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath });
   }, output);
+  await page.getByRole('grid').focus();
   await page.keyboard.press('Control+Shift+s');
   await page.getByText('Saved as saved.xlsx', { exact: true }).waitFor();
   const saved = new ExcelJS.Workbook();
@@ -63,6 +101,12 @@ try {
   assert.equal(saved.worksheets[0].getCell('A4').note, 'Source note');
   assert.equal(saved.worksheets[0].getCell('C2').result, 1);
   assert.equal(saved.worksheets[0].views[0].showGridLines, false);
+  assert.equal(saved.worksheets[0].getTable('StatusTable').name, 'StatusTable');
+  assert.equal(saved.worksheets[0].getCell('A9').dataValidation.type, 'list');
+  assert.equal(saved.worksheets[0].getCell('B9').border.bottom.style, 'dashed');
+  assert.equal(saved.worksheets[0].getCell('B9').font.size, 14);
+  assert.equal(saved.worksheets[0].getCell('C6').result, 2);
+  assert.match(await (await import('jszip')).default.loadAsync(await (await import('node:fs/promises')).readFile(output)).then((zip) => zip.file('xl/worksheets/sheet1.xml').async('string')), /conditionalFormatting/u);
   assert.deepEqual(errors, []);
   console.log('Workbook compatibility UI checks passed.');
 } finally {

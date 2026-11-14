@@ -2,6 +2,8 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import { isSupportedFunction } from '../renderer/formula-functions';
+import { addressForCell, parseCellAddress } from '../renderer/formulas';
+import { listOptions, supportedConditionalRule } from '../shared/excel-features';
 import { randomUUID } from 'node:crypto';
 import { extname, parse, posix } from 'node:path';
 import type {
@@ -91,9 +93,8 @@ function compatibilityIssuesFor(worksheet: ExcelJS.Worksheet): CompatibilityIssu
   const issues: CompatibilityIssue[] = [];
   if (worksheet.getImages().length) issues.push({ feature: 'Images', detail: `${worksheet.name} contains images. They remain in the source file, but this editor does not display or preserve them on save.` });
   const model = worksheet.model as ExcelJS.WorksheetModel & { tables?: unknown[]; conditionalFormattings?: unknown[]; dataValidations?: { model?: object } };
-  if (model.tables?.length) issues.push({ feature: 'Excel tables', detail: `${worksheet.name} contains structured tables. Values and styling are shown, but table metadata may be simplified on save.` });
-  if (model.conditionalFormattings?.length) issues.push({ feature: 'Conditional formatting', detail: `${worksheet.name} contains conditional formatting that is not evaluated by this basic editor.` });
-  if (model.dataValidations && Object.keys(model.dataValidations.model ?? model.dataValidations).length) issues.push({ feature: 'Data validation', detail: `${worksheet.name} contains validation rules that are not editable here and are not preserved on save.` });
+  if ((model.conditionalFormattings as ExcelJS.ConditionalFormattingOptions[] | undefined)?.some((group) => group.rules.some((rule) => !supportedConditionalRule(rule)))) issues.push({ feature: 'Conditional formatting', detail: `${worksheet.name} contains advanced conditional rules that are preserved on save but not evaluated here.` });
+  if (Object.values(model.dataValidations ?? {}).some((rule) => listOptions(rule as ExcelJS.DataValidation) === null)) issues.push({ feature: 'Data validation', detail: `${worksheet.name} contains advanced validation rules that are preserved on save but not enforced here.` });
   if (worksheet.state !== 'visible') issues.push({ feature: 'Hidden sheets', detail: `${worksheet.name} was hidden and is visible while editing here.` });
   const unsupportedFunctions = new Set<string>();
   worksheet.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => {
@@ -119,6 +120,7 @@ function importWorksheet(worksheet: ExcelJS.Worksheet): SheetDocument {
       if ((cell.value === null || cell.value === undefined) && !style && !cell.note) return;
       const imported = formulaCell(cell) ?? { ...scalarFromExcel(cell.value), style };
       if (cell.note) imported.note = typeof cell.note === 'string' ? cell.note : (cell.note.texts ?? []).map((part) => part.text).join('');
+      if (cell.dataValidation?.type) imported.validation = structuredClone(cell.dataValidation);
       cells[`${rowNumber - 1}:${columnNumber - 1}`] = imported;
     });
   });
@@ -131,7 +133,29 @@ function importWorksheet(worksheet: ExcelJS.Worksheet): SheetDocument {
   worksheet.eachRow({ includeEmpty: true }, (row, number) => {
     if (row.height) rowHeights[String(number - 1)] = Math.max(20, Math.round(row.height * 1.34));
   });
-  const model = worksheet.model as ExcelJS.WorksheetModel & { merges?: string[] };
+  const model = worksheet.model as ExcelJS.WorksheetModel & { merges?: string[]; dataValidations?: Record<string, ExcelJS.DataValidation>; tables?: unknown[]; conditionalFormattings?: ExcelJS.ConditionalFormattingOptions[] };
+  for (const [address, validation] of Object.entries(model.dataValidations ?? {})) {
+    const point = parseCellAddress(address);
+    if (!point) continue;
+    const key = `${point.row}:${point.column}`;
+    cells[key] ??= { value: null, valueType: 'blank' };
+    cells[key].validation = structuredClone(validation as ExcelJS.DataValidation);
+  }
+  const tables = (model.tables ?? []).map((raw) => {
+    const table = raw as unknown as ExcelJS.TableProperties & { tableRef: string };
+    return { name: table.name, displayName: table.displayName, range: table.tableRef, ref: table.tableRef.split(':')[0],
+      headerRow: table.headerRow, totalsRow: table.totalsRow,
+      columns: structuredClone(table.columns).map((column, index) => ({ ...column, filterButton: column.filterButton ?? true,
+        totalsRowLabel: index === 0 ? column.totalsRowLabel ?? 'Total' : column.totalsRowLabel,
+        totalsRowFunction: index > 0 ? column.totalsRowFunction ?? 'none' : column.totalsRowFunction })),
+      style: structuredClone(table.style) };
+  });
+  const conditionalFormats = structuredClone(model.conditionalFormattings ?? []);
+  for (const group of conditionalFormats) for (const rule of group.rules) {
+    if (rule.type === 'containsText' && rule.text !== undefined && !('formulae' in rule)) {
+      (rule as typeof rule & { formulae: string[] }).formulae = [`NOT(ISERROR(SEARCH("${rule.text.replace(/"/gu, '""')}",${group.ref.split(/[ :]/u)[0]})))`];
+    }
+  }
   const views = Array.isArray(worksheet.views) ? worksheet.views[0] : undefined;
   return {
     id: randomUUID(),
@@ -145,6 +169,8 @@ function importWorksheet(worksheet: ExcelJS.Worksheet): SheetDocument {
     frozenRows: views?.state === 'frozen' ? views.ySplit : undefined,
     frozenColumns: views?.state === 'frozen' ? views.xSplit : undefined,
     hiddenGridlines: views?.showGridLines === false,
+    tables,
+    conditionalFormats,
   };
 }
 
@@ -199,9 +225,12 @@ export async function importWorkbook(bytes: Uint8Array, path: string, source: Wo
     let normalized = false;
     for (const entry of entries) {
       const xml = await entry.async('string');
-      let next = xml.includes('xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"') ? xml
-        .replace('xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')
-        .replace(/<(\/?)x:/gu, '<$1') : xml;
+      let next = xml;
+      for (const declaration of xml.matchAll(/xmlns:([\w.-]+)=(["'])http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main\2/gu)) {
+        const prefix = declaration[1].replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+        next = next.replace(declaration[0], 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')
+          .replace(new RegExp(`<(\\/?)${prefix}:`, 'gu'), '<$1');
+      }
       if (entry.name.endsWith('.rels')) {
         const base = posix.dirname(posix.dirname(entry.name));
         next = next.replace(/<(?:\w+:)?Relationship\b[^>]*>/gu, (relationship) => {
@@ -256,6 +285,7 @@ function exportStyle(cell: ExcelJS.Cell, style: CellStyle | undefined): void {
 
 function exportCellValue(cell: ExcelJS.Cell, data: CellData): void {
   if (data.note !== undefined) cell.note = data.note;
+  if (data.validation) cell.dataValidation = structuredClone(data.validation);
   if (data.formula) {
     cell.value = { formula: data.formula.replace(/^=/u, ''), result: data.cachedValue ?? undefined } as ExcelJS.CellFormulaValue;
   } else if (data.valueType === 'date' && typeof data.value === 'string') {
@@ -296,11 +326,27 @@ export async function exportWorkbook(workbook: WorkbookDocument, path: string): 
     });
     Object.entries(sheet.columnWidths).forEach(([index, width]) => { worksheet.getColumn(Number(index) + 1).width = width / 7.2; });
     Object.entries(sheet.rowHeights).forEach(([index, height]) => { worksheet.getRow(Number(index) + 1).height = height / 1.34; });
+    for (const table of sheet.tables ?? []) {
+      const [start, last] = table.range.split(':').map(parseCellAddress);
+      if (!start || !last) throw new Error('A table has an invalid range.');
+      const rows: ExcelJS.CellValue[][] = [];
+      for (let row = start.row + (table.headerRow ? 1 : 0); row <= last.row - (table.totalsRow ? 1 : 0); row++) {
+        rows.push(Array.from({ length: table.columns.length }, (_, index) => {
+          const data = sheet.cells[`${row}:${start.column + index}`];
+          return data?.formula ? { formula: data.formula.slice(1), result: data.cachedValue ?? undefined } as ExcelJS.CellFormulaValue : data?.value ?? null;
+        }));
+      }
+      const columns = table.columns.map((column, index) => ({ ...column,
+        name: table.headerRow ? String(sheet.cells[`${start.row}:${start.column + index}`]?.value ?? column.name) : column.name,
+      }));
+      worksheet.addTable({ ...structuredClone(table), ref: addressForCell(start.row, start.column), columns, rows });
+    }
     Object.entries(sheet.cells).forEach(([key, data]) => {
       const [row, column] = key.split(':').map(Number);
       exportCellValue(worksheet.getCell(row + 1, column + 1), data);
     });
     sheet.merges.forEach((range) => { try { worksheet.mergeCells(range); } catch { /* invalid imported merge */ } });
+    for (const group of sheet.conditionalFormats ?? []) worksheet.addConditionalFormatting(structuredClone(group));
   }
   return new Uint8Array(await excel.xlsx.writeBuffer());
 }

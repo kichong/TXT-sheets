@@ -34,6 +34,7 @@ export interface CellData {
   cachedValue?: CellScalar;
   hyperlink?: string;
   note?: string;
+  validation?: DataValidation;
   style?: CellStyle;
 }
 
@@ -49,6 +50,8 @@ export interface SheetDocument {
   frozenRows?: number;
   frozenColumns?: number;
   hiddenGridlines?: boolean;
+  tables?: SheetTable[];
+  conditionalFormats?: ConditionalFormattingOptions[];
 }
 
 export type WorkbookFormat = 'xlsx' | 'csv' | 'tsv';
@@ -170,3 +173,6 @@ export function createBlankWorkbook(): WorkbookDocument {
     compatibilityIssues: [],
   };
 }
+import type { ConditionalFormattingOptions, DataValidation, TableProperties } from 'exceljs';
+
+export type SheetTable = Omit<TableProperties, 'rows'> & { range: string };

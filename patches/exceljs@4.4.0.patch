@@ -15,3 +15,19 @@ diff --git a/lib/xlsx/xlsx.js b/lib/xlsx/xlsx.js
 -const {PassThrough} = require('readable-stream');
 +const {PassThrough} = require('node:stream');
  const ZipStream = require('../utils/zip-stream');
+diff --git a/lib/xlsx/xform/sheet/cf/cf-rule-xform.js b/lib/xlsx/xform/sheet/cf/cf-rule-xform.js
+--- a/lib/xlsx/xform/sheet/cf/cf-rule-xform.js
++++ b/lib/xlsx/xform/sheet/cf/cf-rule-xform.js
+@@ -240,4 +240,5 @@
+       dxfId: model.dxfId,
+       priority: model.priority,
+       operator: BaseXform.toStringAttribute(model.operator, 'containsText'),
++      text: model.text,
+     });
+@@ -271,5 +272,6 @@
+       ...opType(attributes),
+       dxfId: BaseXform.toIntValue(attributes.dxfId),
+       priority: BaseXform.toIntValue(attributes.priority),
++      text: attributes.text,
+       timePeriod: attributes.timePeriod,
+       percent: BaseXform.toBoolValue(attributes.percent),

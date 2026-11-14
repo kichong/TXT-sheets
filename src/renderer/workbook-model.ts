@@ -1,4 +1,4 @@
-import type { CellData, CellStyle, SheetDocument, WorkbookDocument } from '../shared/types';
+import type { CellBorderSide, CellData, CellStyle, SheetDocument, WorkbookDocument } from '../shared/types';
 import { cellKey, columnName, normalizeCellInput, parseCellAddress } from './formulas';
 import { rewriteCellShiftReferences, rewriteStructuralReferences, shiftCopiedReferences, shiftReferenceInterval, type SheetAxis } from './formula-references';
 
@@ -84,9 +84,22 @@ export function setCellInput(sheet: SheetDocument, row: number, column: number, 
   const inheritedStyle = existing?.style ?? template?.style;
   if (normalized) sheet.cells[key] = { ...normalized, style: inheritedStyle ? structuredClone(inheritedStyle) : undefined };
   else if (inheritedStyle) sheet.cells[key] = { value: null, valueType: 'blank', style: structuredClone(inheritedStyle) };
-  else if (existing?.note !== undefined) sheet.cells[key] = { value: null, valueType: 'blank' };
+  else if (existing?.note !== undefined || existing?.validation) sheet.cells[key] = { value: null, valueType: 'blank' };
   else delete sheet.cells[key];
   if (existing?.note !== undefined) sheet.cells[key].note = existing.note;
+  if (existing?.validation) sheet.cells[key].validation = structuredClone(existing.validation);
+}
+
+export function applyBorders(sheet: SheetDocument, selection: Selection, preset: 'all' | 'outside' | 'horizontal' | 'vertical' | 'bottom' | 'none', side: CellBorderSide): void {
+  const bounds = selectionBounds(selection);
+  for (const { row, column, cell } of selectedCells(sheet, selection)) {
+    const border = preset === 'none' ? {} : { ...cell?.style?.border };
+    if (preset === 'all' || (preset === 'outside' && row === bounds.top) || (preset === 'horizontal' && row > bounds.top)) border.top = { ...side };
+    if (preset === 'all' || (preset === 'outside' && row === bounds.bottom) || (preset === 'horizontal' && row < bounds.bottom) || (preset === 'bottom' && row === bounds.bottom)) border.bottom = { ...side };
+    if (preset === 'all' || (preset === 'outside' && column === bounds.left) || (preset === 'vertical' && column > bounds.left)) border.left = { ...side };
+    if (preset === 'all' || (preset === 'outside' && column === bounds.right) || (preset === 'vertical' && column < bounds.right)) border.right = { ...side };
+    sheet.cells[cellKey(row, column)] = { value: null, ...cell, style: { ...cell?.style, border } };
+  }
 }
 
 function modulo(value: number, divisor: number): number {
@@ -169,7 +182,52 @@ function changeStructure(workbook: WorkbookDocument, sheetId: string, axis: Shee
   const count = axis === 'row' ? 'rowCount' : 'columnCount';
   if (delta === 1 && sheet[count] >= (axis === 'row' ? 1_048_576 : 16_384)) return false;
   if (!Number.isInteger(index) || index < 0 || index > sheet[count] || (delta === -1 && index === sheet[count]) || (delta === -1 && sheet[count] <= 1)) return false;
+  sheet.tables = (sheet.tables ?? []).flatMap((table) => {
+    const [start, end] = table.range.split(':').map(parseCellAddress);
+    if (!start || !end) return [];
+    const coordinates = shiftReferenceInterval(start[axis], end[axis], index, delta);
+    if (!coordinates) return [];
+    if (axis === 'column' && index >= start.column && index <= end.column) {
+      if (delta === -1) table.columns.splice(index - start.column, 1);
+      else if (index > start.column) {
+        let suffix = 1;
+        while (table.columns.some((column) => column.name === `Column ${suffix}`)) suffix++;
+        table.columns.splice(index - start.column, 0, { name: `Column ${suffix}`, filterButton: true });
+      }
+    }
+    if (axis === 'row' && delta === -1 && index === start.row) table.headerRow = false;
+    if (axis === 'row' && delta === -1 && index === end.row) table.totalsRow = false;
+    start[axis] = coordinates[0]; end[axis] = coordinates[1];
+    table.range = `${columnName(start.column)}${start.row + 1}:${columnName(end.column)}${end.row + 1}`;
+    table.ref = table.range.split(':')[0];
+    return [table];
+  });
+  for (const owner of workbook.sheets) {
+    owner.conditionalFormats = (owner.conditionalFormats ?? []).flatMap((group) => {
+      if (owner.id === sheet.id) group.ref = group.ref.split(/\s+/u).map((range) => rewriteStructuralReferences(range, owner.name, sheet.name, axis, index, delta)).filter((range) => !range.includes('#REF!')).join(' ');
+      if (!group.ref) return [];
+      for (const rule of group.rules) if ('formulae' in rule && rule.formulae) {
+        rule.formulae = rule.formulae.map((formula) => typeof formula === 'string' ? rewriteStructuralReferences(formula, owner.name, sheet.name, axis, index, delta) : formula);
+      }
+      return [group];
+    });
+    for (const cell of Object.values(owner.cells)) if (cell.validation?.formulae) {
+      cell.validation.formulae = cell.validation.formulae.map((formula) => typeof formula === 'string' ? rewriteStructuralReferences(formula, owner.name, sheet.name, axis, index, delta) : formula);
+    }
+  }
   shiftCells(sheet, axis, index, delta);
+  // A new row inside an inline-list range inherits its neighboring validation.
+  if (delta === 1) {
+    const limit = axis === 'row' ? sheet.columnCount : sheet.rowCount;
+    for (let other = 0; other < limit; other++) {
+      const row = axis === 'row' ? index : other, column = axis === 'column' ? index : other;
+      const before = sheet.cells[cellKey(row - (axis === 'row' ? 1 : 0), column - (axis === 'column' ? 1 : 0))]?.validation;
+      const after = sheet.cells[cellKey(row + (axis === 'row' ? 1 : 0), column + (axis === 'column' ? 1 : 0))]?.validation;
+      if (before && after && JSON.stringify(before) === JSON.stringify(after)) {
+        sheet.cells[cellKey(row, column)] = { value: null, validation: structuredClone(before) };
+      }
+    }
+  }
   sheet[count] += delta;
   for (const owner of workbook.sheets) {
     for (const cell of Object.values(owner.cells)) {
@@ -210,6 +268,15 @@ export function uniqueSheetName(workbook: WorkbookDocument, preferred = 'Sheet')
 export function cellShiftProblem(workbook: WorkbookDocument, sheetId: string, selection: Selection, axis: SheetAxis, delta: 1 | -1): string | null {
   const sheet = workbook.sheets.find((item) => item.id === sheetId)!;
   const bounds = selectionBounds(selection);
+  const managedRanges = [...(sheet.tables ?? []).map((table) => table.range), ...(sheet.conditionalFormats ?? []).flatMap((group) => group.ref.split(/\s+/u))];
+  for (const range of managedRanges) {
+    const [startText, endText] = range.split(':');
+    const start = parseCellAddress(startText), end = parseCellAddress(endText ?? startText);
+    if (!start || !end) continue;
+    const affected = axis === 'row' ? end.row >= bounds.top && end.column >= bounds.left && start.column <= bounds.right
+      : end.column >= bounds.left && end.row >= bounds.top && start.row <= bounds.bottom;
+    if (affected) return 'Insert or delete whole rows or columns to keep tables and conditional formatting intact.';
+  }
   if (delta === 1) {
     const amount = axis === 'row' ? bounds.bottom - bounds.top + 1 : bounds.right - bounds.left + 1;
     const limit = axis === 'row' ? 1_048_576 : 16_384;

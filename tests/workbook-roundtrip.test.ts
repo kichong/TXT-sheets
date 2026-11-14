@@ -34,6 +34,8 @@ describe('Excel workbook fidelity', () => {
       }
     }
     const vml = zip.file('xl/drawings/vmlDrawing1.vml')!;
+    const comment = zip.file('xl/comments1.xml')!;
+    zip.file(comment.name, (await comment.async('string')).replace(/xmlns:x=/gu, 'xmlns:ns0=').replace(/<(\/?)x:/gu, '<$1ns0:'));
     zip.file('xl/drawings/vmldrawing.vml', await vml.async('string'));
     zip.remove(vml.name);
     const rels = zip.file('xl/worksheets/_rels/sheet1.xml.rels')!;
@@ -43,7 +45,7 @@ describe('Excel workbook fidelity', () => {
     expect(imported.sheets[0].cells['0:0']).toMatchObject({ value: 'A long heading', style: { fontSize: 21, bold: true } });
     expect(imported.sheets[0].cells['2:0'].note).toBe('Keep this source note');
     expect(imported.sheets[0].cells['0:3'].hyperlink).toBe('/external/reference.pdf');
-    expect(imported.compatibilityIssues.map((issue) => issue.feature)).toEqual(expect.arrayContaining(['Excel tables', 'Data validation']));
+    expect(imported.compatibilityIssues).toEqual([]);
     expect(imported.compatibilityIssues.some((issue) => issue.feature === 'Advanced formulas')).toBe(false);
     expect(createFormulaEvaluator(imported).evaluateCell(imported.activeSheetId, 0, 2)).toBe(1);
     const reopened = await importWorkbook(await exportWorkbook(imported, 'roundtrip.xlsx'), 'roundtrip.xlsx', source);

@@ -3,6 +3,8 @@ import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } fro
 import type { CSSProperties, KeyboardEvent, PointerEvent, MouseEvent } from 'react';
 import type { CellData, SheetDocument } from '../shared/types';
 import type { FormulaEvaluator } from './formulas';
+import { listOptions } from '../shared/excel-features';
+import { conditionalStyle } from './conditional-formatting';
 import { addressForCell, cellKey, columnName, editableCellText, parseCellAddress } from './formulas';
 import type { Selection } from './workbook-model';
 import {
@@ -30,6 +32,7 @@ interface SpreadsheetGridProps {
   editing: boolean;
   editValue: string;
   onEditValueChange(value: string): void;
+  onCellValueChange(row: number, column: number, value: string): void;
   onCommitEdit(move?: 'down' | 'right'): void;
   onCancelEdit(): void;
   onStartEdit(initial?: string): void;
@@ -329,7 +332,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
       role="grid"
       aria-label={`${sheet.name} spreadsheet grid`}
       onDoubleClick={(event) => {
-        if (editing || (event.target as HTMLElement).closest('input, button, [role="separator"]')) return;
+        if (editing || (event.target as HTMLElement).closest('input, button, select, [role="separator"]')) return;
         const rect = event.currentTarget.getBoundingClientRect();
         if (event.clientX < rect.left + ROW_HEADER_WIDTH || event.clientY < rect.top + COLUMN_HEADER_HEIGHT) return;
         onStartEdit(editableCellText(sheet.cells[cellKey(selection.focus.row, selection.focus.column)]));
@@ -434,6 +437,8 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
             for (let index = merge.masterRow; index <= merge.endRow; index += 1) height += sheet.rowHeights[String(index)] ?? DEFAULT_ROW_HEIGHT;
           }
           const cell = sheet.cells[key];
+          const appearance = { ...cell, value: cell?.value ?? null, style: { ...cell?.style, ...conditionalStyle(sheet, row.index, column.index, evaluator) } };
+          const options = listOptions(cell?.validation);
           // Excel lets unwrapped labels extend through adjacent empty cells.
           // Keep the hit target/selection at its real size and extend only text.
           let textWidth = width - 12;
@@ -460,7 +465,7 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
                 width, height,
                 padding: width < 64 ? '3px 2px' : undefined,
                 transform: `translate(${ROW_HEADER_WIDTH + column.start}px, ${COLUMN_HEADER_HEIGHT + row.start}px)`,
-                ...styleForCell(cell),
+                ...styleForCell(appearance),
                 ...(spills ? { overflow: 'visible', zIndex: active ? 4 : 2 } : {}),
               }}
               onPointerDown={(event) => pointerDown(event, row.index, column.index)}
@@ -478,6 +483,16 @@ export const SpreadsheetGrid = forwardRef<HTMLDivElement, SpreadsheetGridProps>(
               }}
             >
               <span style={spills ? { width: textWidth, flexShrink: 0, pointerEvents: 'none' } : undefined}>{displayValue(cell, evaluator.evaluateCell(sheet.id, row.index, column.index))}</span>
+              {options && !editing ? (
+                <select className="cell-list" aria-label={`Choose value for ${addressForCell(row.index, column.index)}`}
+                  value={String(cell?.value ?? '')}
+                  onPointerDown={(event) => { event.stopPropagation(); onSelectionChange({ anchor: { row: row.index, column: column.index }, focus: { row: row.index, column: column.index } }); }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onChange={(event) => { props.onCellValueChange(row.index, column.index, event.target.value); scrollRef.current?.focus({ preventScroll: true }); }}>
+                  {!options.includes(String(cell?.value ?? '')) ? <option value={String(cell?.value ?? '')}>{String(cell?.value ?? '')}</option> : null}
+                  {options.map((value, index) => <option key={index} value={value}>{value}</option>)}
+                </select>
+              ) : null}
               {row.index === bounds.bottom && column.index === bounds.right && !editing ? (
                 <button type="button" className="fill-handle" aria-label="Drag to fill selected cells" onPointerDown={beginFill} />
               ) : null}

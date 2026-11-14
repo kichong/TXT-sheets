@@ -26,7 +26,10 @@ TXT Sheets follows the focused desktop design and release architecture of [TXT D
 - Direct cell editing, a formula bar, copy/cut/paste, undo/redo, and find
 - Drag-resizable rows and columns with dimensions preserved in Excel workbooks
 - Row and column insertion/deletion
-- Bold, italic, underline, text/fill color, number formats, and alignment
+- Bold, italic, underline, font size, text/fill color, wrapping, number formats, and alignment
+- Cell borders with all/outline/horizontal/vertical/bottom presets, line weights, dash patterns, and colors
+- Inline-list dropdowns and live conditional colors for text matches and simple cell comparisons
+- Excel table definitions, supported conditional formatting, validation rules, and cell notes preserved across saves
 - Excel fidelity for values, formulas, merged cells, sizing, common styling, number formats, and frozen panes
 - Autosave recovery, recent files, Windows **Open with**, light/dark themes, and atomic local saves
 - Visible compatibility notes for advanced Excel features outside the essential editing model

@@ -13,11 +13,12 @@
 
 | Task | Start here | Also inspect |
 | --- | --- | --- |
-| Workbook UI, toolbar, sheet tabs, save/close | `src/renderer/App.tsx`, `src/renderer/styles.css` | `src/renderer/SheetTabMenu.tsx`, `src/renderer/sheet-actions.ts`, `tests/sheet-actions.test.ts`, `scripts/sheet-reorder-smoke.mjs` |
+| Workbook UI, toolbar, borders, styling, sheet tabs, save/close | `src/renderer/App.tsx`, `src/renderer/styles.css` | `src/renderer/workbook-model.ts`, `src/renderer/SheetTabMenu.tsx`, `src/renderer/sheet-actions.ts`, `tests/sheet-actions.test.ts`, `scripts/sheet-reorder-smoke.mjs`, `scripts/workbook-compatibility-smoke.mjs` |
 | Drag selection and cell/row/column context menus | `src/renderer/SpreadsheetGrid.tsx`, `src/renderer/GridContextMenu.tsx`, `src/renderer/App.tsx` | `src/renderer/workbook-model.ts`, `src/renderer/formula-references.ts`, `tests/cell-shifts.test.ts`, `scripts/grid-selection-smoke.mjs` |
 | Grid editing, shared cell-input conversion, selection, resize, fill, row/column structure | `src/renderer/SpreadsheetGrid.tsx`, `src/renderer/workbook-model.ts` | `src/renderer/App.tsx`, `tests/dimensions.test.ts`, `tests/formulas.test.ts`, `tests/structural-references.test.ts`, `scripts/structure-smoke.mjs` |
 | Formulas, copy/fill references, and row/column reference updates | `src/renderer/formulas.ts`, `src/renderer/formula-functions.ts`, `src/renderer/formula-references.ts` | `src/renderer/workbook-model.ts`, `tests/formulas.test.ts`, `tests/structural-references.test.ts`, `src/shared/types.ts` |
 | XLSX/CSV/TSV import and export, OOXML packaging normalization, and cell notes | `src/main/workbook-io.ts` | `src/shared/types.ts`, `tests/workbook-roundtrip.test.ts`, `tests/fixtures/`, `scripts/workbook-compatibility-smoke.mjs` |
+| Excel tables, status dropdowns, and conditional formatting | `src/shared/excel-features.ts`, `src/renderer/conditional-formatting.ts`, `src/main/workbook-io.ts` | `src/shared/types.ts`, `src/renderer/SpreadsheetGrid.tsx`, `src/renderer/workbook-model.ts`, `tests/excel-features.test.ts`, `scripts/workbook-compatibility-smoke.mjs`, `patches/exceljs@4.4.0.patch` |
 | File lifecycle, multiple windows, recent files, per-window recovery, launch files | `src/main.ts`, `src/main/storage.ts`, `src/main/launch-files.ts` | `src/preload.ts`, `tests/launch-files.test.ts`, `tests/window-recovery.test.ts`, `scripts/multi-window-smoke.mjs` |
 | Electron API / IPC contract | `src/main.ts`, `src/preload.ts`, `src/shared/types.ts` | `src/global.d.ts`, `src/renderer/browser-mock.ts` |
 | Updates and releases | `src/main/updater.ts`, `src/shared/updates.ts`, `package.json` | `.github/workflows/release.yml`, `tests/updates.test.ts` |
