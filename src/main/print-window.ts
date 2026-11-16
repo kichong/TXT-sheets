@@ -1,3 +1,4 @@
+import { showPrintPreview } from './print-preview';
 import { BrowserWindow } from 'electron';
 import type { WorkbookPrintRequest, WorkbookPrintResult } from '../shared/types';
 import { buildWorkbookPrintHtml } from './workbook-print';
@@ -21,13 +22,18 @@ export async function renderWorkbookPdf(request: WorkbookPrintRequest, owner: Br
 
 export async function printWorkbook(request: WorkbookPrintRequest, owner: BrowserWindow): Promise<WorkbookPrintResult> {
   const window = await createPrintWindow(request, owner);
+  let result: WorkbookPrintResult = { status: 'canceled' };
   try {
-    return await new Promise<WorkbookPrintResult>((resolve, reject) => {
-      window.webContents.print({ silent: false, printBackground: true, landscape: request.landscape, pageSize: 'Letter', margins: { marginType: 'custom', top: 38, bottom: 38, left: 38, right: 38 } }, (success, error) => {
-        if (success) resolve({ status: 'printed' });
-        else if (/cancel/iu.test(error)) resolve({ status: 'canceled' });
-        else reject(new Error(error || 'Printing failed.'));
+    const pdf = await window.webContents.printToPDF({ pageSize: 'Letter', landscape: request.landscape, printBackground: true, displayHeaderFooter: false, preferCSSPageSize: true });
+    await showPrintPreview(window, pdf, owner, async () => {
+      result = await new Promise<WorkbookPrintResult>((resolve, reject) => {
+        window.webContents.print({ silent: false, printBackground: true, landscape: request.landscape, pageSize: 'Letter', margins: { marginType: 'custom', top: 38, bottom: 38, left: 38, right: 38 } }, (success, error) => {
+          if (success) resolve({ status: 'printed' });
+          else if (/cancel/iu.test(error)) resolve({ status: 'canceled' });
+          else reject(new Error(error || 'Printing failed.'));
+        });
       });
     });
+    return result;
   } finally { window.destroy(); }
 }

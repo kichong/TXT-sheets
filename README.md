@@ -88,3 +88,5 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 ## License
 
 TXT Sheets is available under the [Apache License 2.0](LICENSE).
+
+Print opens a preview of the generated PDF pages before the native printer dialog. Review pages, then choose **Print…** or **Close**.

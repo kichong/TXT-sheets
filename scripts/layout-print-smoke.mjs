@@ -22,6 +22,30 @@ await fixture.xlsx.writeFile(file);
 const packaged = process.argv.includes('--packaged');
 const app = await electron.launch({ ...(packaged ? { executablePath: resolve('release/win-unpacked/TXT Sheets.exe') } : {}), args: [...(packaged ? [] : [resolve('.')]), `--user-data-dir=${join(directory, 'profile')}`, file] });
 const errors = [];
+async function usePreview(print = true) {
+  let preview;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    for (const window of app.windows()) {
+      if (!window.isClosed() && await window.title().catch(() => '') === 'Print preview') preview = window;
+    }
+    if (preview) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(preview, 'Print preview opens');
+  await preview.getByRole('button', { name: 'Print…', exact: true }).waitFor();
+  await preview.waitForTimeout(1000);
+  await preview.screenshot({ path: join(directory, 'preview.png') });
+  if (print) {
+    await preview.getByRole('button', { name: 'Print…', exact: true }).focus();
+    await preview.keyboard.press('Enter');
+    await preview.waitForTimeout(250);
+    await preview.getByRole('button', { name: 'Close', exact: true }).click();
+  } else {
+    await preview.getByRole('button', { name: 'Close', exact: true }).focus();
+    await preview.keyboard.press('Escape').catch(error => { if (!preview.isClosed()) throw error; });
+  }
+}
+
 try {
   await app.evaluate(({ app, dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
@@ -100,6 +124,7 @@ try {
   await grid.focus(); await page.keyboard.press('Control+p');
   const printDialog = page.getByRole('dialog', { name: 'Print workbook', exact: true });
   await printDialog.getByRole('button', { name: 'Print…', exact: true }).click();
+  await usePreview();
   await page.waitForFunction(() => !document.querySelector('.output-dialog'));
   await page.getByRole('button', { name: 'Print workbook', exact: true }).waitFor({ state: 'visible' });
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -108,6 +133,11 @@ try {
   }
   const calls = await app.evaluate(() => globalThis.outputReports.filter((entry) => entry.kind === 'print'));
   assert.equal(calls.length, 1); assert.equal(calls[0].options.silent, false);
+  await grid.focus(); await page.keyboard.press('Control+p');
+  await page.getByRole('dialog', { name: 'Print workbook', exact: true }).getByRole('button', { name: 'Print…', exact: true }).click();
+  await usePreview(false);
+  await page.waitForFunction(() => !document.querySelector('.output-dialog'));
+  assert.equal(await app.evaluate(() => globalThis.outputReports.filter(entry => entry.kind === 'print').length), 1);
   const savedPath = join(directory, 'saved.xlsx');
   await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedPath);
   await grid.focus(); await page.keyboard.press('Control+Shift+s');

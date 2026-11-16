@@ -26,8 +26,8 @@ function bounds(sheet: SheetDocument) {
   return { top, left, bottom, right };
 }
 
-function cellCss(style: CellStyle, scale: number, gridlines: boolean): string {
-  const side = (value?: CellBorderSide) => value?.style ? `${(value.style === 'thick' || value.style === 'double' ? 3 : value.style === 'medium' ? 2 : 1) * scale}px ${['dotted', 'dashed', 'double'].includes(value.style) ? value.style : 'solid'} ${value.color ?? '#aab0b8'}` : gridlines ? `${scale}px solid #d9dde2` : '0';
+function cellCss(style: CellStyle, scale: number): string {
+  const side = (value?: CellBorderSide) => value?.style ? `${(value.style === 'thick' || value.style === 'double' ? 3 : value.style === 'medium' ? 2 : 1) * scale}px ${['dotted', 'dashed', 'double'].includes(value.style) ? value.style : 'solid'} ${value.color ?? '#aab0b8'}` : '0';
   return `font-family:${JSON.stringify(style.fontFamily ?? 'Calibri')},"Segoe UI",sans-serif;font-size:${(style.fontSize ?? 11) * 4 / 3 * scale}px;font-weight:${style.bold ? 700 : 400};font-style:${style.italic ? 'italic' : 'normal'};text-decoration:${style.underline ? 'underline' : 'none'};color:${style.textColor ?? '#202124'};background:${style.fillColor ?? '#fff'};text-align:${style.horizontal ?? 'left'};vertical-align:${style.vertical === 'middle' ? 'middle' : style.vertical ?? 'middle'};white-space:${style.wrapText ? 'pre-wrap' : 'nowrap'};padding:${3 * scale}px ${4 * scale}px;border-top:${side(style.border?.top)};border-right:${side(style.border?.right)};border-bottom:${side(style.border?.bottom)};border-left:${side(style.border?.left)};`;
 }
 
@@ -69,7 +69,7 @@ export function buildWorkbookPrintHtml(request: WorkbookPrintRequest): string {
         }
         const span = merge ? ` colspan="${merge.right - merge.left + 1}" rowspan="${merge.bottom - merge.top + 1}"` : '';
         const content = spillWidth > widths[column - area.left] ? `<span class="spill" style="width:${(spillWidth - 8) * scale}px">${escape(text)}</span>` : `<span class="value">${escape(text)}</span>`;
-        cells.push(`<td${span} style="${escape(cellCss(style, scale, !sheet.hiddenGridlines))}">${content}</td>`);
+        cells.push(`<td${span} style="${escape(cellCss(style, scale))}">${content}</td>`);
       }
       rows.push(`<tr style="height:${(sheet.rowHeights[String(row)] ?? 25) * scale}px">${cells.join('')}</tr>`);
     }

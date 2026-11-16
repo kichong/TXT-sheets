@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createBlankWorkbook } from '../src/shared/types';
+import { applyBorders } from '../src/renderer/workbook-model';
 import { buildWorkbookPrintHtml } from '../src/main/workbook-print';
 
 describe('workbook print surface', () => {
@@ -28,4 +29,17 @@ describe('workbook print surface', () => {
     expect(active).not.toContain('Second worksheet');
     expect(buildWorkbookPrintHtml({ workbook: w, scope: 'all', landscape: true })).toContain('Second worksheet');
   });
+  it('prints only explicit borders, without adding editor gridlines inside an outside border', () => {
+    const workbook = createBlankWorkbook(), sheet = workbook.sheets[0];
+    sheet.cells['1:1'] = { value: 'Interior' };
+    applyBorders(sheet, { anchor: { row: 0, column: 0 }, focus: { row: 2, column: 2 } }, 'outside', { style: 'thin', color: '#123456' });
+    for (const hiddenGridlines of [false, true]) {
+      sheet.hiddenGridlines = hiddenGridlines;
+      const html = buildWorkbookPrintHtml({ workbook, scope: 'active', landscape: false });
+      expect(html).not.toContain('#d9dde2');
+      expect(html).toContain('border-top:1px solid #123456');
+      expect(html).toMatch(/border-top:0;border-right:0;border-bottom:0;border-left:0;[^>]*><span[^>]*>Interior/);
+    }
+  });
+
 });
